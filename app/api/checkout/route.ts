@@ -1,4 +1,6 @@
 import Stripe from "stripe";
+import { isAuthConfigured } from "@/app/lib/authConfig";
+import { getCheckoutReturnUrls } from "@/app/lib/checkoutUrls";
 
 // Creates a Stripe subscription Checkout Session for FlipOS Pro.
 //
@@ -30,14 +32,13 @@ export async function POST(request: Request) {
     // default to monthly
   }
 
-  const origin =
-    request.headers.get("origin") ??
-    `https://${request.headers.get("host") ?? "flipos-tau.vercel.app"}`;
-
   // If the buyer is signed in, bind the subscription to their account so
   // the Stripe webhook can mark them Pro everywhere they sign in.
   let clerkUserId: string | null = null;
-  if (process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY && process.env.CLERK_SECRET_KEY) {
+  if (isAuthConfigured({
+    NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY,
+    CLERK_SECRET_KEY: process.env.CLERK_SECRET_KEY,
+  })) {
     try {
       const { auth } = await import("@clerk/nextjs/server");
       clerkUserId = (await auth()).userId;
@@ -47,6 +48,7 @@ export async function POST(request: Request) {
   }
 
   try {
+    const returnUrls = getCheckoutReturnUrls(process.env);
     const stripe = new Stripe(secretKey);
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
@@ -61,8 +63,8 @@ export async function POST(request: Request) {
       subscription_data: clerkUserId
         ? { metadata: { clerkUserId } }
         : undefined,
-      success_url: `${origin}/?checkout=success`,
-      cancel_url: `${origin}/?checkout=cancelled`,
+      success_url: returnUrls.successUrl,
+      cancel_url: returnUrls.cancelUrl,
     });
     return Response.json({ url: session.url });
   } catch (err) {

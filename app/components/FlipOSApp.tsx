@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Deal, ScopeItem, CustomRoom } from "@/app/lib/types";
 import { scopeTotal, itemTotal } from "@/app/lib/types";
-import { loadDeals, saveDeals, newDeal, dealLabel } from "@/app/lib/storage";
+import { loadDeals, saveDeals, newDeal, dealLabel, emptyForm } from "@/app/lib/storage";
 import { deletePhoto } from "@/app/lib/photos";
 import {
   usePlan,
@@ -13,8 +13,7 @@ import {
   markFreePdfExportUsed,
   type Plan,
 } from "@/app/lib/plan";
-import { authEnabled } from "@/app/lib/authConfig";
-import { AuthControls, AccountPlanSync } from "@/app/components/AuthControls";
+import OptionalAccountControls from "@/app/components/OptionalAccountControls";
 import { dealVerdict } from "@/app/lib/analysis";
 import DealAnalyzer from "@/app/components/DealAnalyzer";
 import ScopeBuilder from "@/app/components/ScopeBuilder";
@@ -22,9 +21,26 @@ import PricingModal from "@/app/components/PricingModal";
 
 type Tab = "analyzer" | "scope";
 
-export default function FlipOSApp() {
-  const [deals, setDeals] = useState<Deal[] | null>(null);
-  const [activeId, setActiveId] = useState<string>("");
+// Identical on the server and the first client render. This preview is never
+// persisted: browser data must finish restoring before saving is enabled.
+const PREVIEW_ID = "flipos-guest-preview";
+function previewDeal(): Deal {
+  return {
+    id: PREVIEW_ID,
+    createdAt: 0,
+    updatedAt: 0,
+    form: emptyForm(),
+    scopeItems: [],
+    contingencyEnabled: true,
+  };
+}
+
+export default function FlipOSApp({ authEnabled = false }: { authEnabled?: boolean }) {
+  const [deals, setDeals] = useState<Deal[] | null>(() => [previewDeal()]);
+  const [activeId, setActiveId] = useState<string>(PREVIEW_ID);
+  const [dealsReady, setDealsReady] = useState(false);
+  const [restoreFailed, setRestoreFailed] = useState(false);
+  const [restoreAttempt, setRestoreAttempt] = useState(0);
   const [tab, setTab] = useState<Tab>("analyzer");
   const [exporting, setExporting] = useState(false);
   const [pricingOpen, setPricingOpen] = useState(false);
@@ -37,7 +53,6 @@ export default function FlipOSApp() {
   const plan = usePlan();
   // Pro if paid on this device OR the signed-in account is Pro
   const isPro = plan === "pro" || accountPlan === "pro";
-  const loaded = useRef(false);
 
   // Handle the return from Stripe checkout
   useEffect(() => {
@@ -55,25 +70,27 @@ export default function FlipOSApp() {
     }
   }, []);
 
-  // Load saved deals once on mount (client only — avoids hydration mismatch)
+  // Restore browser data after hydration without waiting for optional auth.
   useEffect(() => {
-    const saved = loadDeals();
-    if (saved.length > 0) {
-      setDeals(saved); // eslint-disable-line react-hooks/set-state-in-effect
-      setActiveId(saved[0].id);
-    } else {
-      const d = newDeal();
-      setDeals([d]);
-      setActiveId(d.id);
+    try {
+      const saved = loadDeals();
+      const restored = saved.length > 0 ? saved : [newDeal()];
+      setDeals(restored); // eslint-disable-line react-hooks/set-state-in-effect
+      setActiveId(restored[0].id);
+      setFreePdfUsed(readFreePdfExports());
+      setRestoreFailed(false);
+      setDealsReady(true);
+    } catch (error) {
+      console.error("Could not restore FlipOS deals", error);
+      setRestoreFailed(true);
     }
-    setFreePdfUsed(readFreePdfExports());
-    loaded.current = true;
-  }, []);
+  }, [restoreAttempt]);
 
-  // Persist on every change after initial load
+  // State (not a ref) prevents the first effect pass from saving the preview
+  // over existing deals before the restored state has committed.
   useEffect(() => {
-    if (loaded.current && deals) saveDeals(deals);
-  }, [deals]);
+    if (dealsReady && deals) saveDeals(deals);
+  }, [deals, dealsReady]);
 
   const activeDeal = useMemo(
     () => deals?.find((d) => d.id === activeId) ?? null,
@@ -81,6 +98,7 @@ export default function FlipOSApp() {
   );
 
   function updateActiveDeal(patch: Partial<Deal>) {
+    if (!dealsReady) return;
     setDeals((prev) =>
       prev
         ? prev.map((d) =>
@@ -91,6 +109,7 @@ export default function FlipOSApp() {
   }
 
   function handleNewDeal() {
+    if (!dealsReady) return;
     if (!isPro && deals && deals.length >= FREE_DEAL_LIMIT) {
       setPricingReason("deals");
       setPricingOpen(true);
@@ -103,7 +122,7 @@ export default function FlipOSApp() {
   }
 
   function handleDeleteDeal() {
-    if (!deals || !activeDeal) return;
+    if (!dealsReady || !deals || !activeDeal) return;
     if (!window.confirm(`Delete "${dealLabel(activeDeal)}"? This can't be undone.`)) return;
     // best-effort cleanup of this deal's photos
     void deletePhoto(activeDeal.mainPhotoId);
@@ -120,7 +139,7 @@ export default function FlipOSApp() {
   }
 
   async function handleExportPdf() {
-    if (!activeDeal || exporting) return;
+    if (!dealsReady || !activeDeal || exporting) return;
     const sample = !isPro;
     // Free plan: one watermarked sample per deal, then the paywall
     if (sample && freePdfUsed[activeDeal.id]) {
@@ -162,9 +181,11 @@ export default function FlipOSApp() {
 
   if (!deals || !activeDeal) {
     return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
-        <span className="text-slate-600 text-sm">Loading your deals…</span>
-      </div>
+      <main className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center gap-4 p-6" role="alert">
+        <h1 className="text-2xl font-semibold">Your workspace could not open</h1>
+        <p className="text-base text-slate-300">Reload to try again. No sign-in is required.</p>
+        <button onClick={() => window.location.reload()} className="rounded-lg bg-accent-500 px-4 py-2 text-base font-semibold">Reload workspace</button>
+      </main>
     );
   }
 
@@ -203,6 +224,7 @@ export default function FlipOSApp() {
             <select
               value={activeId}
               onChange={(e) => setActiveId(e.target.value)}
+              disabled={!dealsReady}
               className="max-w-40 sm:max-w-60 bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-sm text-slate-200 focus:outline-none focus:border-accent-500 truncate"
               title="Switch deal"
             >
@@ -214,6 +236,7 @@ export default function FlipOSApp() {
             </select>
             <button
               onClick={handleNewDeal}
+              disabled={!dealsReady}
               className="shrink-0 bg-accent-500 hover:bg-accent-400 text-white text-sm font-semibold px-3 py-1.5 rounded-lg transition-colors"
               title="Start a new deal"
             >
@@ -221,6 +244,7 @@ export default function FlipOSApp() {
             </button>
             <button
               onClick={handleDeleteDeal}
+              disabled={!dealsReady}
               className="shrink-0 text-slate-500 hover:text-red-400 text-sm px-1.5 py-1.5 transition-colors"
               title="Delete this deal"
             >
@@ -240,7 +264,6 @@ export default function FlipOSApp() {
                 {verdict.label}
               </div>
             )}
-            {authEnabled && <AuthControls />}
           </div>
         </div>
 
@@ -255,6 +278,7 @@ export default function FlipOSApp() {
             <button
               key={key}
               onClick={() => setTab(key)}
+              disabled={!dealsReady}
               className={`px-3.5 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
                 tab === key
                   ? "border-accent-500 text-accent-400"
@@ -268,7 +292,7 @@ export default function FlipOSApp() {
           {tab === "scope" && (
             <button
               onClick={handleExportPdf}
-              disabled={exporting}
+              disabled={!dealsReady || exporting}
               className="my-1 px-3 text-xs font-semibold rounded-lg border border-accent-700/60 text-accent-400 hover:bg-accent-500/10 disabled:opacity-50 transition-colors"
             >
               {exporting
@@ -328,6 +352,26 @@ export default function FlipOSApp() {
       )}
 
       <main className="max-w-6xl mx-auto px-4 sm:px-6 py-6 lg:py-8">
+        <section aria-labelledby="workspace-heading" className="mb-6 flex flex-col gap-4 rounded-xl border border-slate-800 bg-slate-900/50 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h1 id="workspace-heading" className="text-lg font-semibold">Your deal workspace</h1>
+            <p className="mt-1 text-base text-slate-300">
+              No sign-in required to analyze a deal. Deals are saved in this browser, not synced between devices.
+            </p>
+          </div>
+          {authEnabled && <OptionalAccountControls onPlan={setAccountPlan} />}
+        </section>
+        {!dealsReady && !restoreFailed && (
+          <p role="status" className="mb-4 text-base text-slate-400">Opening this browser&apos;s saved deals…</p>
+        )}
+        {restoreFailed && (
+          <div role="alert" className="mb-6 rounded-xl border border-amber-800 bg-amber-950/30 p-4">
+            <h2 className="text-lg font-semibold text-amber-200">Saved deals could not open</h2>
+            <p className="mt-1 text-base text-slate-200">Your saved data has not been changed. Check that this browser allows site storage, then retry.</p>
+            <button onClick={() => setRestoreAttempt((attempt) => attempt + 1)} className="mt-3 rounded-lg border border-amber-700 px-4 py-2 text-base font-semibold text-amber-100">Retry opening deals</button>
+          </div>
+        )}
+        <fieldset disabled={!dealsReady} aria-busy={!dealsReady && !restoreFailed} className="min-w-0">
         {tab === "analyzer" ? (
           <DealAnalyzer
             form={activeDeal.form}
@@ -349,6 +393,7 @@ export default function FlipOSApp() {
             }
           />
         )}
+        </fieldset>
       </main>
 
       <PricingModal
@@ -357,7 +402,6 @@ export default function FlipOSApp() {
         reason={pricingReason}
       />
 
-      {authEnabled && <AccountPlanSync onPlan={setAccountPlan} />}
     </div>
   );
 }
