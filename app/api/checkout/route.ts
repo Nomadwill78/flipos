@@ -1,4 +1,5 @@
 import Stripe from "stripe";
+import { isAuthConfigured } from "@/app/lib/authConfig";
 
 // Creates a Stripe subscription Checkout Session for FlipOS Pro.
 //
@@ -37,7 +38,10 @@ export async function POST(request: Request) {
   // If the buyer is signed in, bind the subscription to their account so
   // the Stripe webhook can mark them Pro everywhere they sign in.
   let clerkUserId: string | null = null;
-  if (process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY && process.env.CLERK_SECRET_KEY) {
+  if (isAuthConfigured({
+    NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY,
+    CLERK_SECRET_KEY: process.env.CLERK_SECRET_KEY,
+  })) {
     try {
       const { auth } = await import("@clerk/nextjs/server");
       clerkUserId = (await auth()).userId;

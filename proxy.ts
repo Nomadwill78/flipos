@@ -1,13 +1,13 @@
 import { clerkMiddleware } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
+import { isAuthConfigured } from "./app/lib/authConfig";
 
-// Clerk activates only when its keys are configured; otherwise requests pass
-// straight through and the app behaves exactly as before.
-// No routes are force-protected — FlipOS is usable signed-out (freemium);
-// signing in binds the Pro plan to the account.
-const clerkEnabled = Boolean(
-  process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY && process.env.CLERK_SECRET_KEY
-);
+// Clerk is optional and no routes are force-protected. The public calculator
+// works signed out; signing in only binds the Pro plan to an account.
+const clerkEnabled = isAuthConfigured({
+  NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY,
+  CLERK_SECRET_KEY: process.env.CLERK_SECRET_KEY,
+});
 
 export default clerkEnabled
   ? clerkMiddleware()

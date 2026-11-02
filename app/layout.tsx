@@ -1,26 +1,29 @@
 import type { Metadata } from "next";
-import { IBM_Plex_Sans, IBM_Plex_Mono } from "next/font/google";
+import localFont from "next/font/local";
 import { Analytics } from "@vercel/analytics/next";
-import { ClerkProvider } from "@clerk/nextjs";
-import { dark } from "@clerk/themes";
 import { SpeedInsights } from "@vercel/speed-insights/next";
-import { authEnabled } from "@/app/lib/authConfig";
 import "./globals.css";
 
-const plexSans = IBM_Plex_Sans({
+const plexSans = localFont({
+  src: "./fonts/ibm-plex-sans-latin-variable.woff2",
   variable: "--font-plex-sans",
-  subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
+  weight: "100 700",
+  style: "normal",
+  display: "swap",
 });
 
-const plexMono = IBM_Plex_Mono({
+const plexMono = localFont({
+  src: [
+    { path: "./fonts/ibm-plex-mono-latin-500.woff2", weight: "500", style: "normal" },
+    { path: "./fonts/ibm-plex-mono-latin-600.woff2", weight: "600", style: "normal" },
+    { path: "./fonts/ibm-plex-mono-latin-700.woff2", weight: "700", style: "normal" },
+  ],
   variable: "--font-plex-mono",
-  subsets: ["latin"],
-  weight: ["500", "600", "700"],
+  display: "swap",
 });
 
 export const metadata: Metadata = {
-  title: "FlipOS — Deal Analyzer",
+  title: "FlipOS | Deal Analyzer",
   description: "Analyze fix-and-flip deals: cost stack, ROI, 70% rule, and net profit.",
 };
 
@@ -29,29 +32,21 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const page = (
+  return (
     <html
       lang="en"
       className={`${plexSans.variable} ${plexMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">
+        <noscript>
+          <p className="bg-slate-900 p-4 text-base text-slate-100">
+            FlipOS needs JavaScript to calculate and save deals. Enable JavaScript and reload. No sign-in is required.
+          </p>
+        </noscript>
         {children}
         <SpeedInsights />
         <Analytics />
       </body>
     </html>
-  );
-
-  // Sign-in is available only once Clerk keys are configured
-  if (!authEnabled) return page;
-  return (
-    <ClerkProvider
-      appearance={{
-        theme: dark,
-        variables: { colorPrimary: "#3d5afe" },
-      }}
-    >
-      {page}
-    </ClerkProvider>
   );
 }

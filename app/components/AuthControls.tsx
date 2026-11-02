@@ -1,23 +1,40 @@
 "use client";
 
 import { useEffect } from "react";
-import { SignInButton, UserButton, useUser } from "@clerk/nextjs";
+import { ClerkProvider, SignInButton, UserButton, useUser } from "@clerk/nextjs";
+import { dark } from "@clerk/themes";
 import type { Plan } from "@/app/lib/plan";
 
-// Both components in this file may ONLY be rendered when authEnabled is true
-// (they rely on <ClerkProvider> existing in the layout).
+// Clerk is an account-only island. It never wraps the guest calculator or
+// saved-deal restoration, so account loading cannot hold the workspace open.
+export default function AccountControls({
+  onPlan,
+}: {
+  onPlan: (plan: Plan | null) => void;
+}) {
+  return (
+    <ClerkProvider appearance={{ theme: dark, variables: { colorPrimary: "#3d5afe" } }}>
+      <AuthControls />
+      <AccountPlanSync onPlan={onPlan} />
+    </ClerkProvider>
+  );
+}
 
-/** Header sign-in / account button. */
 export function AuthControls() {
   const { isLoaded, isSignedIn } = useUser();
 
-  if (!isLoaded) return null;
+  if (!isLoaded) {
+    return <p role="status" className="text-base text-slate-400">Loading optional sign-in… You can keep analyzing.</p>;
+  }
 
   if (!isSignedIn) {
     return (
       <SignInButton mode="modal">
-        <button className="text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-slate-300 hover:border-accent-500 hover:text-accent-400 transition-colors shrink-0">
-          Sign in
+        <button
+          title="Sign in to link your Pro subscription. Your deals stay in this browser."
+          className="shrink-0 rounded-lg border border-slate-700 bg-slate-800 px-4 py-2 text-base font-semibold text-slate-200 transition-colors hover:border-accent-500 hover:text-accent-400"
+        >
+          Sign in (optional)
         </button>
       </SignInButton>
     );
@@ -30,10 +47,7 @@ export function AuthControls() {
   );
 }
 
-/**
- * Invisible bridge: reads the signed-in user's plan (set by the Stripe
- * webhook in Clerk publicMetadata) and reports it to the app shell.
- */
+/** Reads the account's webhook-verified plan without gating the workspace. */
 export function AccountPlanSync({
   onPlan,
 }: {

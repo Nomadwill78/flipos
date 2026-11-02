@@ -1,9 +1,12 @@
-// Auth is OPTIONAL infrastructure: the app works fully without Clerk keys
-// (local-only deals and device-local Pro). When the env vars below exist,
-// sign-in appears and Pro becomes account-bound.
-//
-//   NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY  — safe to expose, inlined client-side
-//   CLERK_SECRET_KEY                   — server only
-//
-// This flag is evaluated at build time for client components.
-export const authEnabled = Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY);
+// Optional account features are available only with both Clerk keys.
+// Evaluate this in server entry points and pass only the resulting boolean
+// to client components. A publishable key alone must not enable the UI.
+export function isAuthConfigured(environment: {
+  NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY?: string;
+  CLERK_SECRET_KEY?: string;
+}): boolean {
+  return Boolean(
+    environment.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY?.trim() &&
+      environment.CLERK_SECRET_KEY?.trim()
+  );
+}
