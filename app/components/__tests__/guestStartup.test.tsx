@@ -82,14 +82,37 @@ describe("public guest startup", () => {
     }
   });
 
-  it.each(["malformed JSON", "blocked storage"])("opens the guest workspace with %s", async (scenario) => {
-    localStorage.setItem("flipos.deals.v1", "invalid-json");
-    if (scenario === "blocked storage") {
-      vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new Error("Storage blocked"); });
-    }
+  it("does not overwrite malformed saved JSON", async () => {
+    const raw = "invalid-json";
+    localStorage.setItem("flipos.deals.v1", raw);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const writes = vi.spyOn(Storage.prototype, "setItem");
     render(<FlipOSApp />);
-    await waitFor(() => expect(addressInput()).toBeEnabled());
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Your saved data has not been changed");
+    expect(addressInput()).toBeDisabled();
+    expect(writes.mock.calls.filter(([key]) => key === "flipos.deals.v1")).toHaveLength(0);
+    expect(localStorage.getItem("flipos.deals.v1")).toBe(raw);
+  });
+
+  it("does not overwrite existing deals when reads fail but writes remain available", async () => {
+    const saved = storage.newDeal();
+    saved.form.address = "Keep this deal";
+    const raw = JSON.stringify([saved]);
+    localStorage.setItem("flipos.deals.v1", raw);
+
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const originalGetItem = Storage.prototype.getItem;
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation((key) => {
+      if (key === "flipos.deals.v1") throw new Error("Temporary storage read failure");
+      return originalGetItem.call(localStorage, key);
+    });
+    const writes = vi.spyOn(Storage.prototype, "setItem");
+
+    render(<FlipOSApp />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Your saved data has not been changed");
+    expect(addressInput()).toBeDisabled();
+    expect(writes.mock.calls.filter(([key]) => key === "flipos.deals.v1")).toHaveLength(0);
+    expect(originalGetItem.call(localStorage, "flipos.deals.v1")).toBe(raw);
   });
 
   it("offers a retry instead of endless loading and does not write data after startup fails", async () => {

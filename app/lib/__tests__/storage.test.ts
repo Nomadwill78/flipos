@@ -99,23 +99,29 @@ describe("loadDeals / saveDeals", () => {
     expect(loaded[1].id).toBe(deals[1].id);
   });
 
-  it("loadDeals returns empty array on invalid JSON", () => {
+  it("throws on invalid JSON instead of treating the store as empty", () => {
     localStorage.setItem("flipos.deals.v1", "not-json{{{");
-    expect(loadDeals()).toEqual([]);
+    expect(() => loadDeals()).toThrow();
   });
 
-  it("loadDeals returns empty array when stored value is not an array", () => {
+  it("throws when the stored value is not an array", () => {
     localStorage.setItem("flipos.deals.v1", JSON.stringify({ not: "an array" }));
-    expect(loadDeals()).toEqual([]);
+    expect(() => loadDeals()).toThrow("Saved deals are not stored as a list");
   });
 
-  it("loadDeals filters out malformed entries", () => {
+  it("throws when any stored entry is malformed instead of dropping saved data", () => {
     const good = newDeal();
     const raw = JSON.stringify([good, { broken: true }, null]);
     localStorage.setItem("flipos.deals.v1", raw);
-    const loaded = loadDeals();
-    expect(loaded).toHaveLength(1);
-    expect(loaded[0].id).toBe(good.id);
+    expect(() => loadDeals()).toThrow("Saved deals contain unreadable entries");
+    expect(localStorage.getItem("flipos.deals.v1")).toBe(raw);
+  });
+
+  it("surfaces localStorage read failures to the caller", () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("Storage blocked");
+    });
+    expect(() => loadDeals()).toThrow("Storage blocked");
   });
 
   it("saveDeals handles localStorage quota errors gracefully", () => {

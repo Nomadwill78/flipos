@@ -367,7 +367,7 @@ export default function FlipOSApp({ authEnabled = false }: { authEnabled?: boole
         {restoreFailed && (
           <div role="alert" className="mb-6 rounded-xl border border-amber-800 bg-amber-950/30 p-4">
             <h2 className="text-lg font-semibold text-amber-200">Saved deals could not open</h2>
-            <p className="mt-1 text-base text-slate-200">Your saved data has not been changed. Try again without signing in.</p>
+            <p className="mt-1 text-base text-slate-200">Your saved data has not been changed. Check that this browser allows site storage, then retry.</p>
             <button onClick={() => setRestoreAttempt((attempt) => attempt + 1)} className="mt-3 rounded-lg border border-amber-700 px-4 py-2 text-base font-semibold text-amber-100">Retry opening deals</button>
           </div>
         )}

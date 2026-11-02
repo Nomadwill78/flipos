@@ -32,18 +32,34 @@ export function newDeal(): Deal {
 
 export function loadDeals(): Deal[] {
   if (typeof window === "undefined") return [];
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (d): d is Deal =>
-        d && typeof d.id === "string" && d.form && Array.isArray(d.scopeItems)
-    );
-  } catch {
-    return [];
+  // Only an actually absent key means "new workspace". Storage access,
+  // parsing, or shape errors must reach the caller so it can avoid replacing
+  // data that may still be recoverable.
+  const raw = window.localStorage.getItem(STORAGE_KEY);
+  if (raw === null) return [];
+
+  const parsed: unknown = JSON.parse(raw);
+  if (!Array.isArray(parsed)) {
+    throw new Error("Saved deals are not stored as a list");
   }
+
+  const validDeals = parsed.filter(
+    (value): value is Deal => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+      const deal = value as Partial<Deal>;
+      return (
+        typeof deal.id === "string" &&
+        typeof deal.form === "object" &&
+        deal.form !== null &&
+        !Array.isArray(deal.form) &&
+        Array.isArray(deal.scopeItems)
+      );
+    }
+  );
+  if (validDeals.length !== parsed.length) {
+    throw new Error("Saved deals contain unreadable entries");
+  }
+  return validDeals;
 }
 
 export function saveDeals(deals: Deal[]): void {
