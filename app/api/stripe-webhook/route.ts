@@ -1,4 +1,5 @@
 import Stripe from "stripe";
+import { trackVerifiedPaidSuccess } from "@/app/lib/serverAnalytics";
 
 // Stripe calls this endpoint when subscriptions change. It keeps the
 // customer's plan in Clerk publicMetadata, which the app reads on sign-in.
@@ -48,6 +49,11 @@ export async function POST(request: Request) {
         const session = event.data.object;
         if (session.client_reference_id) {
           await setUserPlan(session.client_reference_id, "pro");
+        }
+        try {
+          await trackVerifiedPaidSuccess(session);
+        } catch (err) {
+          console.error("Paid-success analytics delivery failed", err);
         }
         break;
       }

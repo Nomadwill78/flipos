@@ -12,7 +12,7 @@ FlipOS is a browser-based tool for real estate investors who flip houses. Enter 
 
 Beyond the financial analysis, a built-in **Scope Builder** lets you walk a property and build a line-item rehab estimate across 12 areas of a home. The scope total flows automatically into the deal analysis. Pro users can export a contractor-ready PDF scope of work to hand to their GCs.
 
-No account required to start. Everything is saved in your browser.
+No account is required. First-time visitors can inspect a fictional, read-only sample before choosing whether to create a real deal. The sample is not saved. User-created deals stay in the current browser and are not synced between devices.
 
 ---
 
@@ -68,7 +68,13 @@ No account required to start. Everything is saved in your browser.
 - **Free forever** — 1 deal, full analyzer, full scope builder, photos
 - **Pro** — $29/month or $290/year (≈ $24.17/month); unlimited deals + PDF export
 - Stripe Checkout with subscription management
-- Optional Clerk sign-in for account-bound Pro access across devices
+- Optional Clerk sign-in for account-bound Pro access. User-created deal data remains browser-local and is not synced.
+
+### Privacy-conscious analytics
+- Page views, performance signals, and product events are off until visitors opt in and can be turned off later.
+- Product events use a versioned allow-list. Property addresses, deal inputs, photos, and payment details are not sent.
+- Page and performance routes omit query strings.
+- Paid-success events come only from signature-verified Stripe webhooks and do not forward IP, cookie, or user-agent headers.
 
 ---
 
