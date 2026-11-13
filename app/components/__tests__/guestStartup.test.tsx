@@ -49,31 +49,50 @@ function addressInput() {
   return screen.getByRole("textbox", { name: "Property address" });
 }
 
+async function startOwnDeal() {
+  const button = await screen.findByRole("button", { name: "Start with my own deal" });
+  await waitFor(() => expect(button).toBeEnabled());
+  fireEvent.click(button);
+  await waitFor(() => expect(addressInput()).toBeEnabled());
+  return addressInput();
+}
+
 describe("public guest startup", () => {
-  it("server-renders the analyzer and no-account guidance instead of a loading-only screen", () => {
+  it("server-renders the first-visit landing without reading or writing browser data", () => {
     const html = renderToString(<FlipOSApp />);
-    expect(html).toContain("Property address");
-    expect(html).toContain("No sign-in required to analyze a deal.");
-    expect(html).not.toContain("Loading your deals");
+    expect(html).toContain("Know the numbers before you write the offer.");
+    expect(html).toContain("Try a sample deal");
+    expect(html).not.toContain("Property address");
     expect(localStorage.getItem("flipos.deals.v1")).toBeNull();
   });
 
-  it("opens an editable guest deal without auth or saved browser data", async () => {
+  it("keeps the sample temporary and read-only, then creates a separate real deal", async () => {
     render(<FlipOSApp />);
+    const sampleButton = screen.getByRole("button", { name: "Try a sample deal" });
+    await waitFor(() => expect(sampleButton).toBeEnabled());
+    fireEvent.click(sampleButton);
+
+    expect(await screen.findByText("Sample deal workspace")).toBeInTheDocument();
+    expect(await screen.findByText(/This read-only example is never saved/)).toBeInTheDocument();
+    expect(addressInput()).toHaveValue("Sample Property");
+    expect(addressInput()).toBeDisabled();
+    expect(localStorage.getItem("flipos.deals.v1")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Open my workspace" }));
     await waitFor(() => expect(addressInput()).toBeEnabled());
-    expect(screen.queryByText(/Opening this browser/)).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Sign in/ })).not.toBeInTheDocument();
+    expect(addressInput()).toHaveValue("");
     fireEvent.change(addressInput(), { target: { value: "123 Main St" } });
     expect(JSON.parse(localStorage.getItem("flipos.deals.v1")!)[0].form.address).toBe("123 Main St");
   });
 
-  it("restores saved deals without ever persisting the server preview over them", async () => {
+  it("restores saved deals directly without overwriting them with a sample", async () => {
     const saved = storage.newDeal();
     saved.form.address = "456 Saved Ave";
     localStorage.setItem("flipos.deals.v1", JSON.stringify([saved]));
     const writes = vi.spyOn(Storage.prototype, "setItem");
     render(<FlipOSApp />);
     await waitFor(() => expect(addressInput()).toHaveValue("456 Saved Ave"));
+    expect(screen.queryByRole("button", { name: "Try a sample deal" })).not.toBeInTheDocument();
     const dealWrites = writes.mock.calls.filter(([key]) => key === "flipos.deals.v1");
     expect(dealWrites.length).toBeGreaterThan(0);
     for (const [, value] of dealWrites) {
@@ -124,31 +143,31 @@ describe("public guest startup", () => {
     expect(addressInput()).toBeDisabled();
     expect(writes.mock.calls.filter(([key]) => key === "flipos.deals.v1")).toHaveLength(0);
     fireEvent.click(screen.getByRole("button", { name: "Retry opening deals" }));
-    await waitFor(() => expect(addressInput()).toBeEnabled());
+    await startOwnDeal();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });
 
 describe("optional account controls", () => {
-  it("keeps the analyzer editable while Clerk is still loading", async () => {
+  it("keeps the workspace available while Clerk is still loading", async () => {
     render(<FlipOSApp authEnabled />);
-    await waitFor(() => expect(addressInput()).toBeEnabled());
+    await startOwnDeal();
     expect(screen.getByRole("status")).toHaveTextContent("Loading optional sign-in");
   });
 
   it("labels signed-out account access as optional", async () => {
     clerk.loaded = true;
     render(<FlipOSApp authEnabled />);
+    await startOwnDeal();
     expect(await screen.findByRole("button", { name: "Sign in (optional)" })).toBeEnabled();
-    expect(addressInput()).toBeEnabled();
   });
 
-  it("contains a Clerk render failure, preserves the guest workspace, and retries only sign-in", async () => {
+  it("contains a Clerk render failure, preserves guest work, and retries only sign-in", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
     clerk.fail = true;
     render(<FlipOSApp authEnabled />);
-    await waitFor(() => expect(addressInput()).toBeEnabled());
+    await startOwnDeal();
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Sign-in is unavailable"));
     fireEvent.change(addressInput(), { target: { value: "789 Guest Blvd" } });
     clerk.fail = false;
@@ -163,8 +182,8 @@ describe("optional account controls", () => {
     clerk.signedIn = true;
     clerk.user = { publicMetadata: { plan: "pro" } };
     render(<FlipOSApp authEnabled />);
-    await waitFor(() => expect(screen.getByText("Pro", { exact: true })).toBeInTheDocument());
+    await startOwnDeal();
+    expect(await screen.findByText("Pro", { exact: true })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Account" })).toBeInTheDocument();
-    expect(addressInput()).toBeEnabled();
   });
 });

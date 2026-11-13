@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import type { DealForm, FinancingType, Strategy } from "@/app/lib/types";
 import { STRATEGIES } from "@/app/lib/types";
 import { computeResults, DEFAULT_ASSUMPTIONS } from "@/app/lib/analysis";
@@ -47,6 +47,7 @@ interface DealAnalyzerProps {
   onGoToScope: () => void;
   mainPhotoId: string | null | undefined;
   onMainPhotoChange: (photoId: string | null) => void;
+  onAnalysisComplete?: () => void;
 }
 
 export default function DealAnalyzer(props: DealAnalyzerProps) {
@@ -93,6 +94,7 @@ function FlipAnalyzer({
   onFormChange,
   rehabFromScope,
   onGoToScope,
+  onAnalysisComplete,
   common,
 }: DealAnalyzerProps & { common: React.ReactNode }) {
   const set = (patch: Partial<DealForm>) => onFormChange({ ...form, ...patch });
@@ -100,6 +102,10 @@ function FlipAnalyzer({
   const scopeLinked = rehabFromScope !== null;
 
   const results = useMemo(() => computeResults(form, rehabFromScope), [form, rehabFromScope]);
+
+  useEffect(() => {
+    if (results) onAnalysisComplete?.();
+  }, [results, onAnalysisComplete]);
 
   return (
     <div className="lg:grid lg:grid-cols-[1fr_1fr] lg:gap-6 space-y-6 lg:space-y-0">

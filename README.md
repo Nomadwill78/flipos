@@ -12,7 +12,7 @@ FlipOS is a browser-based tool for real estate investors who flip houses. Enter 
 
 Beyond the financial analysis, a built-in **Scope Builder** lets you walk a property and build a line-item rehab estimate across 12 areas of a home. The scope total flows automatically into the deal analysis. Pro users can export a contractor-ready PDF scope of work to hand to their GCs.
 
-No account required to start. Everything is saved in your browser.
+No account is required. First-time visitors can inspect a fictional, read-only sample before choosing whether to create a real deal. The sample is not saved. User-created deals stay in the current browser and are not synced between devices.
 
 ---
 
@@ -68,7 +68,14 @@ No account required to start. Everything is saved in your browser.
 - **Free forever** — 1 deal, full analyzer, full scope builder, photos
 - **Pro** — $29/month or $290/year (≈ $24.17/month); unlimited deals + PDF export
 - Stripe Checkout with subscription management
-- Optional Clerk sign-in for account-bound Pro access across devices
+- Optional Clerk sign-in for account-bound Pro access. User-created deal data remains browser-local and is not synced.
+
+### Privacy-conscious analytics
+- Page views, performance signals, and product events are off until visitors opt in and can be turned off later.
+- Product events use a versioned allow-list. Property addresses, deal inputs, photos, and payment details are not sent.
+- Page and performance routes omit query strings.
+- Paid-success events come only from signature-verified Stripe webhooks, are deduplicated by Checkout Session with Upstash Redis, and do not forward IP, cookie, or user-agent headers.
+- Delayed-payment successes are measured from Stripe's `checkout.session.async_payment_succeeded` event.
 
 ---
 
@@ -132,7 +139,7 @@ Open [http://localhost:3000](http://localhost:3000). The app runs fully without 
 
 ## Environment Variables
 
-Copy `.env.example` to `.env.local` and fill in values as needed. All variables are optional — the app degrades gracefully when they are absent.
+Copy `.env.example` to `.env.local` and fill in values as needed. Most variables are optional. Upstash Redis credentials are required to record opted-in paid-success analytics; without them, that webhook returns an error so Stripe can retry delivery.
 
 ```env
 # ── CLERK (optional) ──────────────────────────────────────────────────────────
@@ -154,8 +161,15 @@ STRIPE_PRICE_ANNUAL=price_...    # $290/year subscription
 # Create a webhook endpoint in Stripe pointing to:
 #   https://your-domain.com/api/stripe-webhook
 # Events: checkout.session.completed, customer.subscription.updated,
+#         checkout.session.async_payment_succeeded,
 #         customer.subscription.deleted
 STRIPE_WEBHOOK_SECRET=whsec_...
+
+# ── PAID-SUCCESS ANALYTICS DEDUPLICATION (Upstash Redis) ───────────────────────
+# Required to atomically suppress duplicate Checkout Session events.
+# Create an Upstash Redis database and copy its REST URL and REST token.
+UPSTASH_REDIS_REST_URL=https://...
+UPSTASH_REDIS_REST_TOKEN=...
 ```
 
 ### Stripe setup (for payments)
@@ -165,7 +179,8 @@ STRIPE_WEBHOOK_SECRET=whsec_...
    - $29.00 / month → copy the `price_...` ID to `STRIPE_PRICE_MONTHLY`
    - $290.00 / year → copy the `price_...` ID to `STRIPE_PRICE_ANNUAL`
 3. Set `STRIPE_SECRET_KEY` from your Stripe dashboard
-4. For webhooks: add an endpoint at `https://your-domain.com/api/stripe-webhook`, subscribe to the three events listed above, and copy the signing secret to `STRIPE_WEBHOOK_SECRET`
+4. For webhooks: add an endpoint at `https://your-domain.com/api/stripe-webhook`, subscribe to the four events listed above, and copy the signing secret to `STRIPE_WEBHOOK_SECRET`
+5. To enable deduplicated paid-success analytics, create an Upstash Redis database and set `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` in the app environment.
 
 ### Clerk setup (for account-bound Pro)
 
