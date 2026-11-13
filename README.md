@@ -74,7 +74,8 @@ No account is required. First-time visitors can inspect a fictional, read-only s
 - Page views, performance signals, and product events are off until visitors opt in and can be turned off later.
 - Product events use a versioned allow-list. Property addresses, deal inputs, photos, and payment details are not sent.
 - Page and performance routes omit query strings.
-- Paid-success events come only from signature-verified Stripe webhooks and do not forward IP, cookie, or user-agent headers.
+- Paid-success events come only from signature-verified Stripe webhooks, are deduplicated by Checkout Session with Upstash Redis, and do not forward IP, cookie, or user-agent headers.
+- Delayed-payment successes are measured from Stripe's `checkout.session.async_payment_succeeded` event.
 
 ---
 
@@ -138,7 +139,7 @@ Open [http://localhost:3000](http://localhost:3000). The app runs fully without 
 
 ## Environment Variables
 
-Copy `.env.example` to `.env.local` and fill in values as needed. All variables are optional — the app degrades gracefully when they are absent.
+Copy `.env.example` to `.env.local` and fill in values as needed. Most variables are optional. Upstash Redis credentials are required to record opted-in paid-success analytics; without them, that webhook returns an error so Stripe can retry delivery.
 
 ```env
 # ── CLERK (optional) ──────────────────────────────────────────────────────────
@@ -160,8 +161,15 @@ STRIPE_PRICE_ANNUAL=price_...    # $290/year subscription
 # Create a webhook endpoint in Stripe pointing to:
 #   https://your-domain.com/api/stripe-webhook
 # Events: checkout.session.completed, customer.subscription.updated,
+#         checkout.session.async_payment_succeeded,
 #         customer.subscription.deleted
 STRIPE_WEBHOOK_SECRET=whsec_...
+
+# ── PAID-SUCCESS ANALYTICS DEDUPLICATION (Upstash Redis) ───────────────────────
+# Required to atomically suppress duplicate Checkout Session events.
+# Create an Upstash Redis database and copy its REST URL and REST token.
+UPSTASH_REDIS_REST_URL=https://...
+UPSTASH_REDIS_REST_TOKEN=...
 ```
 
 ### Stripe setup (for payments)
@@ -171,7 +179,8 @@ STRIPE_WEBHOOK_SECRET=whsec_...
    - $29.00 / month → copy the `price_...` ID to `STRIPE_PRICE_MONTHLY`
    - $290.00 / year → copy the `price_...` ID to `STRIPE_PRICE_ANNUAL`
 3. Set `STRIPE_SECRET_KEY` from your Stripe dashboard
-4. For webhooks: add an endpoint at `https://your-domain.com/api/stripe-webhook`, subscribe to the three events listed above, and copy the signing secret to `STRIPE_WEBHOOK_SECRET`
+4. For webhooks: add an endpoint at `https://your-domain.com/api/stripe-webhook`, subscribe to the four events listed above, and copy the signing secret to `STRIPE_WEBHOOK_SECRET`
+5. To enable deduplicated paid-success analytics, create an Upstash Redis database and set `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` in the app environment.
 
 ### Clerk setup (for account-bound Pro)
 

@@ -20,7 +20,7 @@ beforeEach(() => {
   vi.stubEnv("STRIPE_WEBHOOK_SECRET", "whsec_test_webhook");
   vi.stubEnv("CLERK_SECRET_KEY", "");
   stripeMock.constructEvent.mockReset();
-  paidAnalyticsMock.mockClear();
+  paidAnalyticsMock.mockReset().mockResolvedValue(undefined);
 });
 afterEach(() => vi.unstubAllEnvs());
 
@@ -42,7 +42,7 @@ describe("POST /api/stripe-webhook conversion measurement", () => {
     expect(paidAnalyticsMock).not.toHaveBeenCalled();
   });
 
-  it("passes the Checkout Session to the event handler only after signature verification", async () => {
+  it("passes a completed Checkout Session only after signature verification", async () => {
     const session = {
       id: "cs_test_session",
       client_reference_id: null,
@@ -58,5 +58,34 @@ describe("POST /api/stripe-webhook conversion measurement", () => {
 
     expect(response.status).toBe(200);
     expect(paidAnalyticsMock).toHaveBeenCalledWith(session);
+  });
+
+  it("tracks delayed-payment success through the same verified-session path", async () => {
+    const session = {
+      id: "cs_test_delayed_session",
+      payment_status: "paid",
+      mode: "subscription",
+    };
+    stripeMock.constructEvent.mockResolvedValue({
+      type: "checkout.session.async_payment_succeeded",
+      data: { object: session },
+    });
+
+    const response = await POST(request());
+
+    expect(response.status).toBe(200);
+    expect(paidAnalyticsMock).toHaveBeenCalledWith(session);
+  });
+
+  it("returns a retryable error when paid-success analytics delivery fails", async () => {
+    stripeMock.constructEvent.mockResolvedValue({
+      type: "checkout.session.async_payment_succeeded",
+      data: { object: { id: "cs_test_retry", payment_status: "paid", mode: "subscription" } },
+    });
+    paidAnalyticsMock.mockRejectedValueOnce(new Error("Redis unavailable"));
+
+    const response = await POST(request());
+
+    expect(response.status).toBe(500);
   });
 });

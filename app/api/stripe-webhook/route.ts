@@ -8,9 +8,12 @@ import { trackVerifiedPaidSuccess } from "@/app/lib/serverAnalytics";
 //   STRIPE_SECRET_KEY       — Stripe dashboard → Developers → API keys
 //   STRIPE_WEBHOOK_SECRET   — created with the webhook endpoint (whsec_…)
 //   CLERK_SECRET_KEY        — needed to update the user's plan
+//   UPSTASH_REDIS_REST_URL  — atomic deduplication for paid-success analytics
+//   UPSTASH_REDIS_REST_TOKEN — Upstash Redis REST token
 //
 // Stripe webhook endpoint URL: https://<your-domain>/api/stripe-webhook
 // Events to send: checkout.session.completed,
+//                 checkout.session.async_payment_succeeded,
 //                 customer.subscription.updated,
 //                 customer.subscription.deleted
 
@@ -50,11 +53,11 @@ export async function POST(request: Request) {
         if (session.client_reference_id) {
           await setUserPlan(session.client_reference_id, "pro");
         }
-        try {
-          await trackVerifiedPaidSuccess(session);
-        } catch (err) {
-          console.error("Paid-success analytics delivery failed", err);
-        }
+        await trackVerifiedPaidSuccess(session);
+        break;
+      }
+      case "checkout.session.async_payment_succeeded": {
+        await trackVerifiedPaidSuccess(event.data.object);
         break;
       }
       case "customer.subscription.updated": {

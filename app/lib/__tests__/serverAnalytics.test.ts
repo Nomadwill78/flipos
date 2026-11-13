@@ -1,7 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Stripe from "stripe";
 
 const trackMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const redisFetchMock = vi.hoisted(() => vi.fn());
 vi.mock("@vercel/analytics/server", () => ({ track: trackMock }));
 
 import { OFFER_VERSION } from "@/app/lib/analyticsConstants";
@@ -27,10 +28,31 @@ function paidSession(overrides: Record<string, unknown> = {}) {
   } as unknown as Stripe.Checkout.Session;
 }
 
-beforeEach(() => trackMock.mockClear());
+function redisReply(result: unknown) {
+  return new Response(JSON.stringify({ result }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+beforeEach(() => {
+  trackMock.mockReset().mockResolvedValue(undefined);
+  redisFetchMock.mockReset();
+  vi.stubGlobal("fetch", redisFetchMock);
+  vi.stubEnv("UPSTASH_REDIS_REST_URL", "https://redis.example.test");
+  vi.stubEnv("UPSTASH_REDIS_REST_TOKEN", "test-redis-token");
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
+});
 
 describe("verified paid-success analytics", () => {
   it("tracks only a paid, opt-in subscription with minimal, opaque properties", async () => {
+    redisFetchMock
+      .mockResolvedValueOnce(redisReply("OK"))
+      .mockResolvedValueOnce(redisReply(1));
     const session = paidSession();
     await trackVerifiedPaidSuccess(session);
 
@@ -62,13 +84,63 @@ describe("verified paid-success analytics", () => {
     expect(properties).not.toHaveProperty("email");
     expect(properties).not.toHaveProperty("customer_id");
     expect(options).toEqual({ headers: {} });
+
+    const [claimUrl, claimOptions] = redisFetchMock.mock.calls[0] as [string, RequestInit];
+    expect(claimUrl).toBe("https://redis.example.test/");
+    expect(claimOptions.headers).toMatchObject({ Authorization: "Bearer test-redis-token" });
+    expect(JSON.parse(String(claimOptions.body))).toMatchObject([
+      "SET",
+      expect.stringMatching(/^flipos:analytics:paid-success:v1:[0-9a-f]{64}$/),
+      expect.any(String),
+      "NX",
+      "EX",
+      "900",
+    ]);
   });
 
-  it("does not track unpaid or non-consented sessions", async () => {
+  it("does not emit a second event when a session has already been recorded", async () => {
+    redisFetchMock
+      .mockResolvedValueOnce(redisReply("OK"))
+      .mockResolvedValueOnce(redisReply(1))
+      .mockResolvedValueOnce(redisReply(null))
+      .mockResolvedValueOnce(redisReply("done"));
+
+    await trackVerifiedPaidSuccess(paidSession());
+    await trackVerifiedPaidSuccess(paidSession());
+
+    expect(trackMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases its claim when analytics delivery fails so Stripe can retry", async () => {
+    redisFetchMock
+      .mockResolvedValueOnce(redisReply("OK"))
+      .mockResolvedValueOnce(redisReply(1))
+      .mockResolvedValueOnce(redisReply("OK"))
+      .mockResolvedValueOnce(redisReply(1));
+    trackMock.mockRejectedValueOnce(new Error("analytics unavailable"));
+
+    await expect(trackVerifiedPaidSuccess(paidSession())).rejects.toThrow("analytics unavailable");
+    await trackVerifiedPaidSuccess(paidSession());
+
+    expect(trackMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not access Redis or track unpaid or non-consented sessions", async () => {
     await trackVerifiedPaidSuccess(paidSession({ payment_status: "unpaid" }));
     await trackVerifiedPaidSuccess(paidSession({
       metadata: { plan_id: "pro", billing_period: "monthly", offer_version: OFFER_VERSION },
     }));
+
+    expect(redisFetchMock).not.toHaveBeenCalled();
+    expect(trackMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a concurrent duplicate while another webhook holds the claim", async () => {
+    redisFetchMock
+      .mockResolvedValueOnce(redisReply(null))
+      .mockResolvedValueOnce(redisReply("processing-token"));
+
+    await expect(trackVerifiedPaidSuccess(paidSession())).rejects.toThrow("already processing");
     expect(trackMock).not.toHaveBeenCalled();
   });
 });
