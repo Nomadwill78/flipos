@@ -10,6 +10,7 @@ import {
 
 const PROCESSING_TTL_SECONDS = 15 * 60;
 const COMPLETED_TTL_SECONDS = 90 * 24 * 60 * 60;
+const CONSENT_REVOKED_TTL_SECONDS = 90 * 24 * 60 * 60;
 const COMPLETE_CLAIM_SCRIPT =
   'if redis.call("GET", KEYS[1]) == ARGV[1] then redis.call("SET", KEYS[1], "done", "EX", ARGV[2]); return 1 else return 0 end';
 const RELEASE_CLAIM_SCRIPT =
@@ -59,10 +60,34 @@ async function redisCommand<T>(config: RedisConfig, command: string[]): Promise<
   return payload.result as T;
 }
 
-async function claimPaidSuccess(sessionId: string): Promise<PaidSuccessClaim | null> {
+function hashIdentifier(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function consentRevocationKey(anonSessionId: string): string {
+  return `flipos:analytics:consent-revoked:v1:${hashIdentifier(anonSessionId)}`;
+}
+
+function paidSuccessKey(sessionId: string): string {
+  return `flipos:analytics:paid-success:v1:${hashIdentifier(sessionId)}`;
+}
+
+export async function recordPaidSuccessConsentRevocations(anonSessionIds: string[]): Promise<void> {
   const config = getRedisConfig();
-  const sessionHash = createHash("sha256").update(sessionId).digest("hex");
-  const key = `flipos:analytics:paid-success:v1:${sessionHash}`;
+  const uniqueIds = [...new Set(anonSessionIds)].filter((id) => UUID_PATTERN.test(id)).slice(0, 20);
+  for (const anonSessionId of uniqueIds) {
+    await redisCommand(config, [
+      "SET",
+      consentRevocationKey(anonSessionId),
+      "revoked",
+      "EX",
+      String(CONSENT_REVOKED_TTL_SECONDS),
+    ]);
+  }
+}
+
+async function claimPaidSuccess(sessionId: string, config: RedisConfig): Promise<PaidSuccessClaim | null> {
+  const key = paidSuccessKey(sessionId);
   const token = randomUUID();
 
   const claimResult = await redisCommand<string | null>(config, [
@@ -125,7 +150,7 @@ export async function trackVerifiedPaidSuccess(session: Stripe.Checkout.Session)
 
   const metadata = session.metadata;
   const billingPeriod = metadata?.billing_period;
-  const sessionId = metadata?.anon_session_id;
+  const anonSessionId = metadata?.anon_session_id;
   const amount = session.amount_total;
   const currency = session.currency;
 
@@ -134,8 +159,8 @@ export async function trackVerifiedPaidSuccess(session: Stripe.Checkout.Session)
     metadata?.plan_id !== "pro" ||
     metadata?.offer_version !== OFFER_VERSION ||
     (billingPeriod !== "monthly" && billingPeriod !== "annual") ||
-    !sessionId ||
-    !UUID_PATTERN.test(sessionId) ||
+    !anonSessionId ||
+    !UUID_PATTERN.test(anonSessionId) ||
     amount === null ||
     !Number.isFinite(amount) ||
     !currency
@@ -143,8 +168,20 @@ export async function trackVerifiedPaidSuccess(session: Stripe.Checkout.Session)
     return;
   }
 
-  const claim = await claimPaidSuccess(session.id);
+  const config = getRedisConfig();
+  const claim = await claimPaidSuccess(session.id, config);
   if (!claim) return;
+
+  // Check revocation after taking the per-session claim and immediately before sending.
+  // Events already accepted by the analytics provider cannot be recalled.
+  const revocation = await redisCommand<string | null>(config, [
+    "GET",
+    consentRevocationKey(anonSessionId),
+  ]);
+  if (revocation === "revoked") {
+    await releasePaidSuccessClaim(claim);
+    return;
+  }
 
   const purchaseRef = createHash("sha256").update(session.id).digest("hex").slice(0, 20);
   try {
@@ -154,7 +191,7 @@ export async function trackVerifiedPaidSuccess(session: Stripe.Checkout.Session)
         event_id: randomUUID(),
         event_ts_utc: new Date().toISOString(),
         schema_version: ANALYTICS_SCHEMA_VERSION,
-        anon_session_id: sessionId,
+        anon_session_id: anonSessionId,
         flow_variant: ACTIVATION_FLOW_VARIANT,
         route_id: "stripe_webhook",
         device_class: "unknown",
@@ -178,6 +215,6 @@ export async function trackVerifiedPaidSuccess(session: Stripe.Checkout.Session)
     throw error;
   }
 
-  // If this write fails, keep the processing lease until it expires. Stripe can retry afterward.
+  // If this write fails, keep the processing lease until it expires.
   await completePaidSuccessClaim(claim);
 }

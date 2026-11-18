@@ -1,7 +1,7 @@
 const DEFAULT_PRODUCTION_ORIGIN = "https://flipos-tau.vercel.app";
 const DEFAULT_DEVELOPMENT_ORIGIN = "http://localhost:3000";
 
-type CheckoutUrlEnvironment = {
+export type CheckoutUrlEnvironment = {
   APP_URL?: string;
   NODE_ENV?: string;
   VERCEL_ENV?: string;
@@ -40,9 +40,11 @@ export function getCheckoutReturnUrls(environment: CheckoutUrlEnvironment) {
     : environment.APP_URL?.trim() || (productionHost ? `https://${productionHost}` : undefined) ||
       (isDevelopment ? DEFAULT_DEVELOPMENT_ORIGIN : DEFAULT_PRODUCTION_ORIGIN);
   const origin = trustedOrigin(candidate, isDevelopment);
+  const baseSuccessUrl = new URL("/?checkout=success", origin).toString();
 
   return {
-    successUrl: new URL("/?checkout=success", origin).toString(),
+    // Keep the placeholder literal so Stripe can replace it with the real session ID.
+    successUrl: `${baseSuccessUrl}&session_id={CHECKOUT_SESSION_ID}`,
     cancelUrl: new URL("/?checkout=cancelled", origin).toString(),
   };
 }

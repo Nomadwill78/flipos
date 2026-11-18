@@ -2,14 +2,16 @@ import Stripe from "stripe";
 import { isAuthConfigured } from "@/app/lib/authConfig";
 import { getCheckoutReturnUrls } from "@/app/lib/checkoutUrls";
 import { OFFER_VERSION, UUID_PATTERN } from "@/app/lib/analyticsConstants";
+import {
+  CHECKOUT_CLAIM_COOKIE,
+  CHECKOUT_CLAIM_TTL_SECONDS,
+  createCheckoutClaimToken,
+  hashCheckoutClaimToken,
+  serializeCookie,
+} from "@/app/lib/stripeEntitlements";
 
 // Creates a Stripe subscription Checkout Session for FlipOS Pro.
-//
-// Required environment variables (set in .env.local and Vercel):
-//   STRIPE_SECRET_KEY      — from Stripe dashboard → Developers → API keys
-//   STRIPE_PRICE_MONTHLY   — price id (price_…) for the $29/mo subscription
-//   STRIPE_PRICE_ANNUAL    — price id (price_…) for the $290/yr subscription
-
+// Price selection is server-controlled; the return claim is never exposed to JS.
 export async function POST(request: Request) {
   const secretKey = process.env.STRIPE_SECRET_KEY;
   const priceMonthly = process.env.STRIPE_PRICE_MONTHLY;
@@ -17,10 +19,7 @@ export async function POST(request: Request) {
 
   if (!secretKey || !priceMonthly || !priceAnnual) {
     return Response.json(
-      {
-        error:
-          "Payments are being set up — check back very soon. Nothing was charged.",
-      },
+      { error: "Payments are being set up — check back very soon. Nothing was charged." },
       { status: 503 }
     );
   }
@@ -38,11 +37,9 @@ export async function POST(request: Request) {
       analyticsSessionId = body.analytics.anon_session_id;
     }
   } catch {
-    // default to monthly
+    // Default to monthly. No client-supplied price is accepted.
   }
 
-  // If the buyer is signed in, bind the subscription to their account so
-  // the Stripe webhook can mark them Pro everywhere they sign in.
   let clerkUserId: string | null = null;
   if (isAuthConfigured({
     NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY,
@@ -52,10 +49,11 @@ export async function POST(request: Request) {
       const { auth } = await import("@clerk/nextjs/server");
       clerkUserId = (await auth()).userId;
     } catch {
-      // not signed in — checkout still works, unlock is device-local
+      // Guest checkout remains available through the browser claim cookie.
     }
   }
 
+  const checkoutClaim = createCheckoutClaimToken();
   try {
     const returnUrls = getCheckoutReturnUrls(process.env);
     const stripe = new Stripe(secretKey);
@@ -73,6 +71,7 @@ export async function POST(request: Request) {
         plan_id: "pro",
         billing_period: interval,
         offer_version: OFFER_VERSION,
+        checkout_claim_hash: hashCheckoutClaimToken(checkoutClaim),
         ...(analyticsSessionId
           ? { analytics_consent: "granted", anon_session_id: analyticsSessionId }
           : {}),
@@ -83,7 +82,27 @@ export async function POST(request: Request) {
       success_url: returnUrls.successUrl,
       cancel_url: returnUrls.cancelUrl,
     });
-    return Response.json({ url: session.url });
+
+    if (!session.id || !session.url) {
+      return Response.json(
+        { error: "Stripe did not create a checkout link. Nothing was charged." },
+        { status: 502 }
+      );
+    }
+
+    return Response.json(
+      { url: session.url },
+      {
+        headers: {
+          "Set-Cookie": serializeCookie(
+            CHECKOUT_CLAIM_COOKIE,
+            checkoutClaim,
+            process.env,
+            CHECKOUT_CLAIM_TTL_SECONDS
+          ),
+        },
+      }
+    );
   } catch (err) {
     console.error("Stripe checkout error:", err);
     return Response.json(

@@ -16,6 +16,9 @@ import { PRICING } from "@/app/lib/plan";
 let consentPreference: AnalyticsConsent = "unknown";
 let ephemeralSessionId: string | null = null;
 const CONSENT_CHANGE_EVENT = "flipos-analytics-consent-change";
+const PENDING_CHECKOUT_IDS_KEY = "flipos.pendingCheckoutAnalyticsIds.v1";
+const PENDING_REVOCATIONS_KEY = "flipos.pendingAnalyticsRevocations.v1";
+const PENDING_CHECKOUT_IDS_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const SAFE_ROUTE_IDS = new Set([
   "landing",
   "sample_flow",
@@ -137,9 +140,122 @@ export function getAnalyticsConsent(): AnalyticsConsent {
   return consentPreference;
 }
 
-export function setAnalyticsConsent(choice: Exclude<AnalyticsConsent, "unknown">): void {
+function readPendingCheckoutAnalyticsIds(): string[] {
+  try {
+    const raw = window.localStorage.getItem(PENDING_CHECKOUT_IDS_KEY);
+    const entries = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(entries)) return [];
+    const now = Date.now();
+    const valid = entries.filter((entry) =>
+      entry &&
+      typeof entry.id === "string" &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(entry.id) &&
+      typeof entry.expiresAt === "number" &&
+      entry.expiresAt > now
+    );
+    if (valid.length !== entries.length) {
+      window.localStorage.setItem(PENDING_CHECKOUT_IDS_KEY, JSON.stringify(valid));
+    }
+    return valid.map((entry) => entry.id);
+  } catch {
+    return [];
+  }
+}
+
+function rememberPendingCheckoutAnalyticsId(id: string): boolean {
+  try {
+    const current = readPendingCheckoutAnalyticsIds();
+    const now = Date.now();
+    const entries = current.map((pendingId) => ({
+      id: pendingId,
+      expiresAt: now + PENDING_CHECKOUT_IDS_TTL_MS,
+    }));
+    if (!entries.some((entry) => entry.id === id)) {
+      entries.push({ id, expiresAt: now + PENDING_CHECKOUT_IDS_TTL_MS });
+    }
+    window.localStorage.setItem(PENDING_CHECKOUT_IDS_KEY, JSON.stringify(entries.slice(-20)));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readPendingAnalyticsRevocationIds(): string[] {
+  try {
+    const raw = window.localStorage.getItem(PENDING_REVOCATIONS_KEY);
+    const entries = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(entries)) return [];
+    const valid = entries.filter((entry) =>
+      entry &&
+      typeof entry.id === "string" &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(entry.id) &&
+      typeof entry.expiresAt === "number" &&
+      entry.expiresAt > Date.now()
+    );
+    if (valid.length !== entries.length) {
+      window.localStorage.setItem(PENDING_REVOCATIONS_KEY, JSON.stringify(valid));
+    }
+    return valid.map((entry) => entry.id);
+  } catch {
+    return [];
+  }
+}
+
+function queueAnalyticsRevocations(ids: string[]): void {
+  if (ids.length === 0) return;
+  try {
+    const now = Date.now();
+    const existing = readPendingAnalyticsRevocationIds();
+    const entries = existing.map((id) => ({ id, expiresAt: now + PENDING_CHECKOUT_IDS_TTL_MS }));
+    for (const id of ids) {
+      if (!entries.some((entry) => entry.id === id)) {
+        entries.push({ id, expiresAt: now + PENDING_CHECKOUT_IDS_TTL_MS });
+      }
+    }
+    window.localStorage.setItem(PENDING_REVOCATIONS_KEY, JSON.stringify(entries.slice(-20)));
+  } catch {
+    // The current page can still attempt the request using its in-memory IDs.
+  }
+}
+
+export function getPendingAnalyticsRevocationIds(): string[] {
+  return readPendingAnalyticsRevocationIds();
+}
+
+export function clearPendingAnalyticsRevocationIds(ids: string[]): void {
+  const completed = new Set(ids);
+  try {
+    const raw = window.localStorage.getItem(PENDING_REVOCATIONS_KEY);
+    const entries = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(entries)) return;
+    const remaining = entries.filter((entry) =>
+      entry &&
+      typeof entry.id === "string" &&
+      !completed.has(entry.id) &&
+      typeof entry.expiresAt === "number" &&
+      entry.expiresAt > Date.now()
+    );
+    if (remaining.length === 0) window.localStorage.removeItem(PENDING_REVOCATIONS_KEY);
+    else window.localStorage.setItem(PENDING_REVOCATIONS_KEY, JSON.stringify(remaining));
+  } catch {
+    // A failed local cleanup is safe: the server endpoint is idempotent.
+  }
+}
+
+export function setAnalyticsConsent(choice: Exclude<AnalyticsConsent, "unknown">): string[] {
+  const revokedSessionIds = choice === "denied"
+    ? [...new Set([...readPendingCheckoutAnalyticsIds(), ...(ephemeralSessionId ? [ephemeralSessionId] : [])])].slice(0, 20)
+    : [];
   consentPreference = choice;
-  if (choice === "denied") ephemeralSessionId = null;
+  if (choice === "denied") {
+    ephemeralSessionId = null;
+    queueAnalyticsRevocations(revokedSessionIds);
+    try {
+      window.localStorage.removeItem(PENDING_CHECKOUT_IDS_KEY);
+    } catch {
+      // The revocation queue or current-page state still retains the IDs when available.
+    }
+  }
 
   try {
     window.localStorage.setItem(ANALYTICS_CONSENT_KEY, choice);
@@ -150,6 +266,7 @@ export function setAnalyticsConsent(choice: Exclude<AnalyticsConsent, "unknown">
   if (typeof window !== "undefined") {
     window.dispatchEvent(new Event(CONSENT_CHANGE_EVENT));
   }
+  return revokedSessionIds;
 }
 
 export function subscribeToAnalyticsConsent(onChange: () => void): () => void {
@@ -239,5 +356,6 @@ export const filterSpeedInsight: BeforeSendMiddleware = (event) => {
 
 export function getOrCreateEphemeralSessionIdForCheckout(): string | null {
   if (getAnalyticsConsent() !== "granted" || typeof window === "undefined") return null;
-  return getEphemeralSessionId();
+  const sessionId = getEphemeralSessionId();
+  return rememberPendingCheckoutAnalyticsId(sessionId) ? sessionId : null;
 }

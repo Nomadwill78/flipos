@@ -6,7 +6,10 @@ const redisFetchMock = vi.hoisted(() => vi.fn());
 vi.mock("@vercel/analytics/server", () => ({ track: trackMock }));
 
 import { OFFER_VERSION } from "@/app/lib/analyticsConstants";
-import { trackVerifiedPaidSuccess } from "@/app/lib/serverAnalytics";
+import {
+  recordPaidSuccessConsentRevocations,
+  trackVerifiedPaidSuccess,
+} from "@/app/lib/serverAnalytics";
 
 const SESSION_ID = "123e4567-e89b-42d3-a456-426614174000";
 
@@ -49,9 +52,10 @@ afterEach(() => {
 });
 
 describe("verified paid-success analytics", () => {
-  it("tracks only a paid, opt-in subscription with minimal, opaque properties", async () => {
+  it("tracks only a paid, opted-in subscription with minimal opaque properties", async () => {
     redisFetchMock
       .mockResolvedValueOnce(redisReply("OK"))
+      .mockResolvedValueOnce(redisReply(null))
       .mockResolvedValueOnce(redisReply(1));
     const session = paidSession();
     await trackVerifiedPaidSuccess(session);
@@ -96,11 +100,48 @@ describe("verified paid-success analytics", () => {
       "EX",
       "900",
     ]);
+    expect(JSON.parse(String(redisFetchMock.mock.calls[1][1].body))).toEqual([
+      "GET",
+      expect.stringMatching(/^flipos:analytics:consent-revoked:v1:[0-9a-f]{64}$/),
+    ]);
+  });
+
+  it("does not send paid-success analytics after consent is revoked", async () => {
+    redisFetchMock
+      .mockResolvedValueOnce(redisReply("OK"))
+      .mockResolvedValueOnce(redisReply("revoked"))
+      .mockResolvedValueOnce(redisReply(1));
+
+    await trackVerifiedPaidSuccess(paidSession());
+
+    expect(trackMock).not.toHaveBeenCalled();
+    expect(JSON.parse(String(redisFetchMock.mock.calls[2][1].body))).toMatchObject([
+      "EVAL",
+      expect.any(String),
+      "1",
+      expect.stringMatching(/^flipos:analytics:paid-success:v1:/),
+      expect.any(String),
+    ]);
+  });
+
+  it("records only hashed revocation keys with a bounded retention period", async () => {
+    redisFetchMock.mockResolvedValueOnce(redisReply("OK"));
+    await recordPaidSuccessConsentRevocations([SESSION_ID]);
+    const command = JSON.parse(String(redisFetchMock.mock.calls[0][1].body));
+    expect(command).toEqual([
+      "SET",
+      expect.stringMatching(/^flipos:analytics:consent-revoked:v1:[0-9a-f]{64}$/),
+      "revoked",
+      "EX",
+      "7776000",
+    ]);
+    expect(command[1]).not.toContain(SESSION_ID);
   });
 
   it("does not emit a second event when a session has already been recorded", async () => {
     redisFetchMock
       .mockResolvedValueOnce(redisReply("OK"))
+      .mockResolvedValueOnce(redisReply(null))
       .mockResolvedValueOnce(redisReply(1))
       .mockResolvedValueOnce(redisReply(null))
       .mockResolvedValueOnce(redisReply("done"));
@@ -111,11 +152,13 @@ describe("verified paid-success analytics", () => {
     expect(trackMock).toHaveBeenCalledTimes(1);
   });
 
-  it("releases its claim when analytics delivery fails so Stripe can retry", async () => {
+  it("releases its claim when analytics delivery fails", async () => {
     redisFetchMock
       .mockResolvedValueOnce(redisReply("OK"))
+      .mockResolvedValueOnce(redisReply(null))
       .mockResolvedValueOnce(redisReply(1))
       .mockResolvedValueOnce(redisReply("OK"))
+      .mockResolvedValueOnce(redisReply(null))
       .mockResolvedValueOnce(redisReply(1));
     trackMock.mockRejectedValueOnce(new Error("analytics unavailable"));
 
@@ -132,6 +175,13 @@ describe("verified paid-success analytics", () => {
     }));
 
     expect(redisFetchMock).not.toHaveBeenCalled();
+    expect(trackMock).not.toHaveBeenCalled();
+  });
+
+  it("does not track when Redis is not configured", async () => {
+    vi.stubEnv("UPSTASH_REDIS_REST_URL", "");
+    vi.stubEnv("UPSTASH_REDIS_REST_TOKEN", "");
+    await expect(trackVerifiedPaidSuccess(paidSession())).rejects.toThrow("requires UPSTASH_REDIS_REST_URL");
     expect(trackMock).not.toHaveBeenCalled();
   });
 

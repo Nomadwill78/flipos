@@ -1,11 +1,13 @@
 "use client";
 
-import { useState, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { Analytics } from "@vercel/analytics/next";
 import { SpeedInsights } from "@vercel/speed-insights/next";
 import {
   filterAnalyticsPageview,
   filterSpeedInsight,
+  clearPendingAnalyticsRevocationIds,
+  getPendingAnalyticsRevocationIds,
   getAnalyticsConsent,
   setAnalyticsConsent,
   subscribeToAnalyticsConsent,
@@ -19,9 +21,36 @@ export default function AnalyticsConsent() {
     () => "unknown"
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [revocationIds, setRevocationIds] = useState<string[]>([]);
+
+  useEffect(() => {
+    const ids = [...new Set([...getPendingAnalyticsRevocationIds(), ...revocationIds])].slice(0, 20);
+    if (ids.length === 0) return;
+
+    let current = true;
+    void fetch("/api/analytics/consent-revocation", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ anonSessionIds: ids }),
+      keepalive: true,
+    })
+      .then((response) => {
+        if (!response.ok) return;
+        clearPendingAnalyticsRevocationIds(ids);
+        if (current) {
+          setRevocationIds((pending) => pending.filter((id) => !ids.includes(id)));
+        }
+      })
+      .catch(() => undefined);
+
+    return () => {
+      current = false;
+    };
+  }, [revocationIds]);
 
   function choose(nextChoice: Exclude<ConsentChoice, "unknown">) {
-    setAnalyticsConsent(nextChoice);
+    const revokedSessionIds = setAnalyticsConsent(nextChoice);
+    if (nextChoice === "denied") setRevocationIds(revokedSessionIds);
     setSettingsOpen(false);
   }
 
@@ -47,6 +76,9 @@ export default function AnalyticsConsent() {
               <h2 className="text-lg font-semibold text-white">Optional usage and performance measurement</h2>
               <p className="mt-2 text-base leading-6 text-slate-300">
                 If you allow it, FlipOS measures page views, performance, and a short list of product events. Product events exclude deal inputs, property addresses, photos, and payment details. FlipOS adds no persistent user or device ID to these events, and page routes are sent without query strings.
+              </p>
+              <p className="mt-2 text-base leading-6 text-slate-400">
+                For up to seven days after starting Checkout, a temporary anonymous session ID may be stored in this browser. If you withdraw consent, FlipOS queues it only until the server confirms suppression or the seven-day period expires.
               </p>
               <p className="mt-2 text-base text-slate-400">You can change this choice later in Privacy settings.</p>
             </div>

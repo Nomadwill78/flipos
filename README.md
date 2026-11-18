@@ -74,8 +74,10 @@ No account is required. First-time visitors can inspect a fictional, read-only s
 - Page views, performance signals, and product events are off until visitors opt in and can be turned off later.
 - Product events use a versioned allow-list. Property addresses, deal inputs, photos, and payment details are not sent.
 - Page and performance routes omit query strings.
-- Paid-success events come only from signature-verified Stripe webhooks, are deduplicated by Checkout Session with Upstash Redis, and do not forward IP, cookie, or user-agent headers.
+- Paid-success events come only from signature-verified Stripe webhooks, are deduplicated by Checkout Session with Upstash Redis, and do not forward IP, cookie, or user-agent headers. Redis or analytics outages never block Stripe payment fulfillment.
 - Delayed-payment successes are measured from Stripe's `checkout.session.async_payment_succeeded` event.
+- After a Checkout return, FlipOS verifies the completed paid subscription directly with Stripe before issuing a signed HttpOnly browser entitlement. Account-bound plan updates follow Stripe subscription lifecycle webhooks.
+- If a visitor withdraws analytics consent, a temporary anonymous Checkout ID can be sent to a short-lived server-side suppression marker so a later paid-success event is not sent.
 
 ---
 
@@ -139,54 +141,53 @@ Open [http://localhost:3000](http://localhost:3000). The app runs fully without 
 
 ## Environment Variables
 
-Copy `.env.example` to `.env.local` and fill in values as needed. Most variables are optional. Upstash Redis credentials are required to record opted-in paid-success analytics; without them, that webhook returns an error so Stripe can retry delivery.
+Copy `.env.example` to `.env.local` and fill in values as needed. Most variables are optional. Stripe test keys and test-mode price IDs are required to exercise Checkout. Upstash Redis is only for opted-in paid-success analytics deduplication and consent-revocation markers. If it is unavailable, payment fulfillment continues and the optional analytics event is skipped.
 
 ```env
 # ── CLERK (optional) ──────────────────────────────────────────────────────────
 # Auth is disabled and the Sign in button is hidden until these are set.
 # Get these from clerk.com → your app → API Keys
-NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_live_...
-CLERK_SECRET_KEY=sk_live_...
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_...
+CLERK_SECRET_KEY=sk_test_...
 
 # ── STRIPE (optional) ─────────────────────────────────────────────────────────
-# Checkout returns a 503 until all three are set.
-# Get the secret key from dashboard.stripe.com → Developers → API Keys
-# Create two subscription prices in Stripe and paste the price_... IDs here.
-STRIPE_SECRET_KEY=sk_live_...
-STRIPE_PRICE_MONTHLY=price_...   # $29/month subscription
-STRIPE_PRICE_ANNUAL=price_...    # $290/year subscription
+# Checkout returns a 503 until all three are set. Use test-mode values for
+# local testing and an isolated staging project. Never use live values in tests.
+STRIPE_SECRET_KEY=sk_test_...
+STRIPE_PRICE_MONTHLY=price_...   # test-mode $29/month subscription
+STRIPE_PRICE_ANNUAL=price_...    # test-mode $290/year subscription
 
 # ── STRIPE WEBHOOK (optional) ─────────────────────────────────────────────────
-# Required only for account-bound Pro (syncs plan via Clerk publicMetadata).
+# Required for signed webhook delivery and account-bound subscription sync.
 # Create a webhook endpoint in Stripe pointing to:
-#   https://your-domain.com/api/stripe-webhook
-# Events: checkout.session.completed, customer.subscription.updated,
-#         checkout.session.async_payment_succeeded,
+#   https://your-isolated-domain.com/api/stripe-webhook
+# Events: checkout.session.completed, checkout.session.async_payment_succeeded,
+#         customer.subscription.created, customer.subscription.updated,
 #         customer.subscription.deleted
 STRIPE_WEBHOOK_SECRET=whsec_...
 
 # ── PAID-SUCCESS ANALYTICS DEDUPLICATION (Upstash Redis) ───────────────────────
-# Required to atomically suppress duplicate Checkout Session events.
-# Create an Upstash Redis database and copy its REST URL and REST token.
+# Optional, analytics-only. Needed to deduplicate opted-in paid-success
+# events and honor consent withdrawals. It is not required for payment grants.
+# Use a non-production Upstash database for local/staging tests.
 UPSTASH_REDIS_REST_URL=https://...
 UPSTASH_REDIS_REST_TOKEN=...
 ```
 
 ### Stripe setup (for payments)
 
-1. Create a Stripe account at [stripe.com](https://stripe.com)
-2. Create two **recurring** prices:
+1. For local validation or an isolated staging environment, use Stripe test mode and create two **recurring test prices**:
    - $29.00 / month → copy the `price_...` ID to `STRIPE_PRICE_MONTHLY`
    - $290.00 / year → copy the `price_...` ID to `STRIPE_PRICE_ANNUAL`
-3. Set `STRIPE_SECRET_KEY` from your Stripe dashboard
-4. For webhooks: add an endpoint at `https://your-domain.com/api/stripe-webhook`, subscribe to the four events listed above, and copy the signing secret to `STRIPE_WEBHOOK_SECRET`
-5. To enable deduplicated paid-success analytics, create an Upstash Redis database and set `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` in the app environment.
+3. Set the test-mode `STRIPE_SECRET_KEY`; never use a live key for the review or test plan.
+4. For local webhook verification, use Stripe CLI to forward test events to `http://localhost:3000/api/stripe-webhook` and set its generated signing secret as `STRIPE_WEBHOOK_SECRET`. For isolated staging, create a test-mode endpoint and subscribe to all five events listed above.
+5. Upstash is optional. If testing analytics consent revocation, configure a separate non-production Upstash database. Missing Upstash settings must not prevent account entitlement updates or acknowledge failures to Stripe.
 
-### Clerk setup (for account-bound Pro)
+### Clerk setup (optional, for account-bound Pro)
 
 1. Create a Clerk app at [clerk.com](https://clerk.com)
 2. Copy the Publishable Key and Secret Key into your env file
-3. Enable the `plan` field in Clerk public metadata (the webhook handler writes `{ plan: "pro" | "free" }` there)
+3. Enable the `plan` field in Clerk public metadata. The webhook writes `{ plan: "pro" | "free" }` from subscription lifecycle events; Checkout success alone does not update an account plan.
 
 ---
 
@@ -204,7 +205,7 @@ The project is pre-configured for **zero-config Vercel deployment**.
 
 **Auto-deploy behavior:**
 - `main` branch → production (`flipos-tau.vercel.app`)
-- Any other branch → preview URL (posted as a PR comment)
+- Other branches → preview URL unless that branch is disabled in `git.deploymentEnabled` in `vercel.json`.
 
 ### Self-hosted
 
@@ -266,7 +267,7 @@ The app runs on port 3000. Put it behind any reverse proxy (nginx, Caddy, etc.).
 
 - **Deals** are stored as JSON in `localStorage` under `flipos.deals.v1`. No server database — the app is fully client-side for core features.
 - **Photos** are canvas-compressed (1400px main / 900px item) and stored in IndexedDB to stay within localStorage size limits.
-- **Plan state** is stored device-locally in `localStorage` after a Stripe Checkout success redirect. When Clerk auth is enabled, plan state is also written to Clerk `publicMetadata` via the Stripe webhook, making Pro account-bound.
+- **Plan state** is never granted from a success URL or browser-local storage. Guest Pro access uses a signed HttpOnly cookie issued only after server-side Stripe verification and revalidated against the active subscription. When Clerk auth is enabled, account-bound plan state is written to Clerk `publicMetadata` from Stripe subscription lifecycle webhooks.
 
 ### Key files
 
@@ -281,8 +282,10 @@ app/
 │   ├── AuthControls.tsx    # Clerk sign-in button + plan sync
 │   └── scopePdf.tsx        # PDF generation (lazy-loaded)
 ├── api/
-│   ├── checkout/route.ts   # POST → create Stripe checkout session
-│   └── stripe-webhook/route.ts  # POST → sync plan to Clerk on payment
+│   ├── checkout/route.ts   # POST → create server-priced Stripe checkout session
+│   ├── checkout/verify/route.ts # POST → verify returned Checkout Session
+│   ├── checkout/entitlement/route.ts # GET → revalidate signed browser entitlement
+│   └── stripe-webhook/route.ts  # POST → sync subscription lifecycle to Clerk
 └── lib/
     ├── types.ts            # All TypeScript interfaces + calculation helpers
     ├── storage.ts          # Deal load/save (localStorage)

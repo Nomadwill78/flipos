@@ -1,31 +1,10 @@
 import Stripe from "stripe";
+import { setAccountPlan } from "@/app/lib/accountEntitlements";
 import { trackVerifiedPaidSuccess } from "@/app/lib/serverAnalytics";
 
-// Stripe calls this endpoint when subscriptions change. It keeps the
-// customer's plan in Clerk publicMetadata, which the app reads on sign-in.
-//
-// Required environment variables:
-//   STRIPE_SECRET_KEY       — Stripe dashboard → Developers → API keys
-//   STRIPE_WEBHOOK_SECRET   — created with the webhook endpoint (whsec_…)
-//   CLERK_SECRET_KEY        — needed to update the user's plan
-//   UPSTASH_REDIS_REST_URL  — atomic deduplication for paid-success analytics
-//   UPSTASH_REDIS_REST_TOKEN — Upstash Redis REST token
-//
-// Stripe webhook endpoint URL: https://<your-domain>/api/stripe-webhook
-// Events to send: checkout.session.completed,
-//                 checkout.session.async_payment_succeeded,
-//                 customer.subscription.updated,
-//                 customer.subscription.deleted
-
-async function setUserPlan(userId: string, plan: "pro" | "free"): Promise<void> {
-  if (!process.env.CLERK_SECRET_KEY) return;
-  const { clerkClient } = await import("@clerk/nextjs/server");
-  const client = await clerkClient();
-  await client.users.updateUserMetadata(userId, {
-    publicMetadata: { plan },
-  });
-}
-
+// Stripe calls this endpoint for signed subscription lifecycle events.
+// Account Pro access follows the subscription's verified active status.
+// Paid-success analytics is optional and must never block payment fulfillment.
 export async function POST(request: Request) {
   const secretKey = process.env.STRIPE_SECRET_KEY;
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
@@ -48,36 +27,34 @@ export async function POST(request: Request) {
 
   try {
     switch (event.type) {
-      case "checkout.session.completed": {
-        const session = event.data.object;
-        if (session.client_reference_id) {
-          await setUserPlan(session.client_reference_id, "pro");
-        }
-        await trackVerifiedPaidSuccess(session);
-        break;
-      }
+      case "checkout.session.completed":
       case "checkout.session.async_payment_succeeded": {
-        await trackVerifiedPaidSuccess(event.data.object);
+        try {
+          await trackVerifiedPaidSuccess(event.data.object as Stripe.Checkout.Session);
+        } catch {
+          console.warn("Paid-success analytics was skipped; payment webhook processing continues.");
+        }
         break;
       }
+      case "customer.subscription.created":
       case "customer.subscription.updated": {
-        const sub = event.data.object;
-        const userId = sub.metadata?.clerkUserId;
+        const subscription = event.data.object;
+        const userId = subscription.metadata?.clerkUserId;
         if (userId) {
-          const stillPro = ["active", "trialing", "past_due"].includes(sub.status);
-          await setUserPlan(userId, stillPro ? "pro" : "free");
+          const entitled = ["active", "trialing"].includes(subscription.status);
+          await setAccountPlan(userId, entitled ? "pro" : "free");
         }
         break;
       }
       case "customer.subscription.deleted": {
-        const sub = event.data.object;
-        const userId = sub.metadata?.clerkUserId;
-        if (userId) await setUserPlan(userId, "free");
+        const subscription = event.data.object;
+        const userId = subscription.metadata?.clerkUserId;
+        if (userId) await setAccountPlan(userId, "free");
         break;
       }
     }
-  } catch (err) {
-    console.error("Webhook handling error:", err);
+  } catch (error) {
+    console.error("Webhook entitlement handling failed:", error);
     return new Response("Webhook handler failed", { status: 500 });
   }
 

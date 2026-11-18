@@ -6,8 +6,6 @@ import { scopeTotal, itemTotal } from "@/app/lib/types";
 import { loadDeals, saveDeals, newDeal, dealLabel, emptyForm } from "@/app/lib/storage";
 import { deletePhoto } from "@/app/lib/photos";
 import {
-  usePlan,
-  setPlan,
   FREE_DEAL_LIMIT,
   readFreePdfExports,
   markFreePdfExportUsed,
@@ -54,32 +52,77 @@ export default function FlipOSApp({ authEnabled = false }: { authEnabled?: boole
   const [pricingReason, setPricingReason] = useState<"deals" | "pdf" | null>(null);
   const [pricingEntryPoint, setPricingEntryPoint] = useState("header_upgrade");
   const [welcomePro, setWelcomePro] = useState(false);
+  const [checkoutNotice, setCheckoutNotice] = useState<"pending" | "unverified" | null>(null);
   const [accountPlan, setAccountPlan] = useState<Plan | null>(null);
+  const [verifiedBrowserPlan, setVerifiedBrowserPlan] = useState<Plan | null>(null);
   // Which deals have used their one free watermarked sample export
   const [freePdfUsed, setFreePdfUsed] = useState<Record<string, boolean>>({});
   const [sampleExported, setSampleExported] = useState(false);
   const checkoutReturn = useRef(false);
   const sampleStartedAt = useRef<number | null>(null);
   const analysisReported = useRef(false);
-  const plan = usePlan();
-  // Pro if paid on this device OR the signed-in account is Pro
-  const isPro = plan === "pro" || accountPlan === "pro";
+  const isPro = accountPlan === "pro" || verifiedBrowserPlan === "pro";
 
-  // Handle the return from Stripe checkout
+  // A Checkout return is a request for server-side verification, not proof of payment.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const checkout = params.get("checkout");
-    if (checkout === "success") {
+    const sessionId = params.get("session_id");
+    let cancelled = false;
+    if (checkout === "success" && sessionId) {
       checkoutReturn.current = true;
-      setPlan("pro");
       // eslint-disable-next-line react-hooks/set-state-in-effect
-      setWelcomePro(true);
+      setCheckoutNotice("pending");
+      void fetch("/api/checkout/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId }),
+      })
+        .then(async (response) => {
+          const data = await response.json();
+          if (cancelled) return;
+          if (response.ok && data.plan === "pro") {
+            setVerifiedBrowserPlan("pro");
+            setAccountPlan((current) => current === "pro" ? current : "pro");
+            setWelcomePro(true);
+            setCheckoutNotice(null);
+          } else {
+            setCheckoutNotice("unverified");
+          }
+        })
+        .catch(() => {
+          if (!cancelled) setCheckoutNotice("unverified");
+        });
     }
     if (checkout) {
       params.delete("checkout");
+      params.delete("session_id");
       const qs = params.toString();
       window.history.replaceState({}, "", window.location.pathname + (qs ? `?${qs}` : ""));
     }
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Revalidate a signed browser entitlement against Stripe on each app load.
+  useEffect(() => {
+    // Checkout verification sets a fresh cookie in the preceding effect. Avoid
+    // racing this request against that cookie write and overwriting Pro with Free.
+    if (checkoutReturn.current) return;
+    let cancelled = false;
+    void fetch("/api/checkout/entitlement", { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) return;
+        const data = await response.json();
+        if (!cancelled && (data.plan === "pro" || data.plan === "free")) {
+          setVerifiedBrowserPlan(data.plan);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Restore browser data after hydration without waiting for optional auth.
@@ -517,6 +560,21 @@ export default function FlipOSApp({ authEnabled = false }: { authEnabled?: boole
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {checkoutNotice === "pending" && (
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 mt-4">
+          <p role="status" className="rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-base text-slate-200">
+            Verifying your subscription with Stripe. Pro features stay locked until payment is confirmed.
+          </p>
+        </div>
+      )}
+      {checkoutNotice === "unverified" && (
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 mt-4">
+          <p role="alert" className="rounded-lg border border-amber-800 bg-amber-950/30 px-4 py-3 text-base text-amber-100">
+            We could not verify an active Pro subscription for this browser. A Checkout return link alone does not grant Pro access.
+          </p>
         </div>
       )}
 

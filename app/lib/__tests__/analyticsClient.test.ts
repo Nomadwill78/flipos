@@ -68,6 +68,24 @@ describe("privacy-conscious activation analytics", () => {
     unsubscribe();
   });
 
+  it("queues pending checkout IDs on opt-out until server revocation succeeds", async () => {
+    const analytics = await import("@/app/lib/analyticsClient");
+    analytics.setAnalyticsConsent("granted");
+    const pendingId = analytics.getOrCreateEphemeralSessionIdForCheckout();
+
+    expect(pendingId).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(localStorage.getItem("flipos.pendingCheckoutAnalyticsIds.v1")).toContain(pendingId);
+
+    const revokedIds = analytics.setAnalyticsConsent("denied");
+    expect(revokedIds).toContain(pendingId);
+    expect(localStorage.getItem("flipos.pendingCheckoutAnalyticsIds.v1")).toBeNull();
+    expect(analytics.getPendingAnalyticsRevocationIds()).toContain(pendingId);
+
+    analytics.clearPendingAnalyticsRevocationIds([pendingId!]);
+    expect(analytics.getPendingAnalyticsRevocationIds()).not.toContain(pendingId);
+    expect(localStorage.getItem("flipos.pendingAnalyticsRevocations.v1")).toBeNull();
+  });
+
   it("strips query strings from page and performance routes and cancels tracking after rejection", async () => {
     const analytics = await import("@/app/lib/analyticsClient");
     analytics.setAnalyticsConsent("granted");
