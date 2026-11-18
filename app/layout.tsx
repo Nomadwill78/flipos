@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import localFont from "next/font/local";
-import { Analytics } from "@vercel/analytics/next";
-import { SpeedInsights } from "@vercel/speed-insights/next";
+import AnalyticsConsent from "@/app/components/AnalyticsConsent";
 import "./globals.css";
 
 const plexSans = localFont({
@@ -23,7 +22,7 @@ const plexMono = localFont({
 });
 
 export const metadata: Metadata = {
-  title: "FlipOS | Deal Analyzer",
+  title: "FlipOS | Fix & Flip Deal Analyzer",
   description: "Analyze fix-and-flip deals: cost stack, ROI, 70% rule, and net profit.",
 };
 
@@ -44,8 +43,7 @@ export default function RootLayout({
           </p>
         </noscript>
         {children}
-        <SpeedInsights />
-        <Analytics />
+        <AnalyticsConsent />
       </body>
     </html>
   );

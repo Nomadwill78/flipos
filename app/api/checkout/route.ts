@@ -1,6 +1,7 @@
 import Stripe from "stripe";
 import { isAuthConfigured } from "@/app/lib/authConfig";
 import { getCheckoutReturnUrls } from "@/app/lib/checkoutUrls";
+import { OFFER_VERSION, UUID_PATTERN } from "@/app/lib/analyticsConstants";
 
 // Creates a Stripe subscription Checkout Session for FlipOS Pro.
 //
@@ -25,9 +26,17 @@ export async function POST(request: Request) {
   }
 
   let interval: "monthly" | "annual" = "monthly";
+  let analyticsSessionId: string | null = null;
   try {
     const body = await request.json();
     if (body?.interval === "annual") interval = "annual";
+    if (
+      body?.analytics?.consent_state === "granted" &&
+      typeof body?.analytics?.anon_session_id === "string" &&
+      UUID_PATTERN.test(body.analytics.anon_session_id)
+    ) {
+      analyticsSessionId = body.analytics.anon_session_id;
+    }
   } catch {
     // default to monthly
   }
@@ -60,6 +69,14 @@ export async function POST(request: Request) {
       ],
       allow_promotion_codes: true,
       client_reference_id: clerkUserId ?? undefined,
+      metadata: {
+        plan_id: "pro",
+        billing_period: interval,
+        offer_version: OFFER_VERSION,
+        ...(analyticsSessionId
+          ? { analytics_consent: "granted", anon_session_id: analyticsSessionId }
+          : {}),
+      },
       subscription_data: clerkUserId
         ? { metadata: { clerkUserId } }
         : undefined,

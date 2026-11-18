@@ -1,7 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { PRICING, FREE_DEAL_LIMIT } from "@/app/lib/plan";
+import { OFFER_VERSION } from "@/app/lib/analyticsConstants";
+import {
+  getAnalyticsConsent,
+  getOrCreateEphemeralSessionIdForCheckout,
+  trackActivationEvent,
+} from "@/app/lib/analyticsClient";
 
 type Interval = "monthly" | "annual";
 
@@ -10,6 +16,8 @@ interface PricingModalProps {
   onClose: () => void;
   /** Why the modal opened — tailors the headline */
   reason?: "deals" | "pdf" | null;
+  entryPoint?: string;
+  onPricingViewed?: (entryPoint: string) => void;
 }
 
 const FREE_FEATURES = [
@@ -24,14 +32,30 @@ const PRO_FEATURES = [
   "Unlimited deals",
   "Unlimited watermark-free scope PDFs",
   "Photos embedded in PDF bids",
-  "Cloud sync across devices (coming soon)",
   "Priority support",
 ];
 
-export default function PricingModal({ open, onClose, reason }: PricingModalProps) {
+export default function PricingModal({
+  open,
+  onClose,
+  reason,
+  entryPoint = "pricing_modal",
+  onPricingViewed,
+}: PricingModalProps) {
   const [interval, setInterval] = useState<Interval>("annual");
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const trackedOpen = useRef(false);
+
+  useEffect(() => {
+    if (!open) {
+      trackedOpen.current = false;
+      return;
+    }
+    if (trackedOpen.current) return;
+    trackedOpen.current = true;
+    onPricingViewed?.(entryPoint);
+  }, [open, entryPoint, onPricingViewed]);
 
   if (!open) return null;
 
@@ -46,13 +70,30 @@ export default function PricingModal({ open, onClose, reason }: PricingModalProp
     setLoading(true);
     setNotice(null);
     try {
+      const consentGranted = getAnalyticsConsent() === "granted";
+      const anonSessionId = consentGranted
+        ? getOrCreateEphemeralSessionIdForCheckout()
+        : null;
       const res = await fetch("/api/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ interval }),
+        body: JSON.stringify({
+          interval,
+          ...(anonSessionId
+            ? { analytics: { consent_state: "granted", anon_session_id: anonSessionId } }
+            : {}),
+        }),
       });
       const data = await res.json();
       if (res.ok && data.url) {
+        trackActivationEvent("checkout_started", "checkout", {
+          plan_id: "pro",
+          billing_period: interval,
+          price_amount: PRICING[interval],
+          currency: "usd",
+          offer_version: OFFER_VERSION,
+          checkout_provider: "stripe",
+        });
         window.location.href = data.url;
         return;
       }

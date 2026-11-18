@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Deal, ScopeItem, CustomRoom } from "@/app/lib/types";
 import { scopeTotal, itemTotal } from "@/app/lib/types";
 import { loadDeals, saveDeals, newDeal, dealLabel, emptyForm } from "@/app/lib/storage";
@@ -18,6 +18,10 @@ import { dealVerdict } from "@/app/lib/analysis";
 import DealAnalyzer from "@/app/components/DealAnalyzer";
 import ScopeBuilder from "@/app/components/ScopeBuilder";
 import PricingModal from "@/app/components/PricingModal";
+import FirstVisitLanding from "@/app/components/FirstVisitLanding";
+import { createSampleDeal } from "@/app/lib/sample";
+import { SAMPLE_ID, SAMPLE_VERSION, OFFER_VERSION } from "@/app/lib/analyticsConstants";
+import { trackActivationEvent } from "@/app/lib/analyticsClient";
 
 type Tab = "analyzer" | "scope";
 
@@ -39,17 +43,24 @@ export default function FlipOSApp({ authEnabled = false }: { authEnabled?: boole
   const [deals, setDeals] = useState<Deal[] | null>(() => [previewDeal()]);
   const [activeId, setActiveId] = useState<string>(PREVIEW_ID);
   const [dealsReady, setDealsReady] = useState(false);
+  const [firstVisit, setFirstVisit] = useState(true);
+  const [sampleMode, setSampleMode] = useState(false);
+  const [sampleDeal, setSampleDeal] = useState<Deal | null>(null);
   const [restoreFailed, setRestoreFailed] = useState(false);
   const [restoreAttempt, setRestoreAttempt] = useState(0);
   const [tab, setTab] = useState<Tab>("analyzer");
   const [exporting, setExporting] = useState(false);
   const [pricingOpen, setPricingOpen] = useState(false);
   const [pricingReason, setPricingReason] = useState<"deals" | "pdf" | null>(null);
+  const [pricingEntryPoint, setPricingEntryPoint] = useState("header_upgrade");
   const [welcomePro, setWelcomePro] = useState(false);
   const [accountPlan, setAccountPlan] = useState<Plan | null>(null);
   // Which deals have used their one free watermarked sample export
   const [freePdfUsed, setFreePdfUsed] = useState<Record<string, boolean>>({});
   const [sampleExported, setSampleExported] = useState(false);
+  const checkoutReturn = useRef(false);
+  const sampleStartedAt = useRef<number | null>(null);
+  const analysisReported = useRef(false);
   const plan = usePlan();
   // Pro if paid on this device OR the signed-in account is Pro
   const isPro = plan === "pro" || accountPlan === "pro";
@@ -59,6 +70,7 @@ export default function FlipOSApp({ authEnabled = false }: { authEnabled?: boole
     const params = new URLSearchParams(window.location.search);
     const checkout = params.get("checkout");
     if (checkout === "success") {
+      checkoutReturn.current = true;
       setPlan("pro");
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setWelcomePro(true);
@@ -74,9 +86,20 @@ export default function FlipOSApp({ authEnabled = false }: { authEnabled?: boole
   useEffect(() => {
     try {
       const saved = loadDeals();
-      const restored = saved.length > 0 ? saved : [newDeal()];
-      setDeals(restored); // eslint-disable-line react-hooks/set-state-in-effect
-      setActiveId(restored[0].id);
+      if (saved.length > 0) {
+        setDeals(saved); // eslint-disable-line react-hooks/set-state-in-effect
+        setActiveId(saved[0].id);
+        setFirstVisit(false);
+      } else if (checkoutReturn.current) {
+        const created = [newDeal()];
+        setDeals(created);
+        setActiveId(created[0].id);
+        setFirstVisit(false);
+      } else {
+        setDeals([previewDeal()]);
+        setActiveId(PREVIEW_ID);
+        setFirstVisit(true);
+      }
       setFreePdfUsed(readFreePdfExports());
       setRestoreFailed(false);
       setDealsReady(true);
@@ -89,16 +112,20 @@ export default function FlipOSApp({ authEnabled = false }: { authEnabled?: boole
   // State (not a ref) prevents the first effect pass from saving the preview
   // over existing deals before the restored state has committed.
   useEffect(() => {
-    if (dealsReady && deals) saveDeals(deals);
+    if (dealsReady && deals?.some((deal) => deal.id !== PREVIEW_ID)) saveDeals(deals);
   }, [deals, dealsReady]);
 
   const activeDeal = useMemo(
-    () => deals?.find((d) => d.id === activeId) ?? null,
-    [deals, activeId]
+    () => (sampleMode ? sampleDeal : deals?.find((d) => d.id === activeId) ?? null),
+    [sampleMode, sampleDeal, deals, activeId]
   );
 
   function updateActiveDeal(patch: Partial<Deal>) {
     if (!dealsReady) return;
+    if (sampleMode) {
+      setSampleDeal((current) => current ? { ...current, ...patch, updatedAt: Date.now() } : current);
+      return;
+    }
     setDeals((prev) =>
       prev
         ? prev.map((d) =>
@@ -108,11 +135,108 @@ export default function FlipOSApp({ authEnabled = false }: { authEnabled?: boole
     );
   }
 
+  function handleStartSample() {
+    if (!dealsReady) return;
+    trackActivationEvent("landing_cta_clicked", "landing", {
+      cta_id: "try_sample_deal",
+      placement: "hero_primary",
+      destination_path: "sample_flow",
+      landing_variant: "first_visit_v1",
+    });
+    const example = createSampleDeal();
+    setSampleDeal(example);
+    setSampleMode(true);
+    setFirstVisit(false);
+    setTab("analyzer");
+    sampleStartedAt.current = Date.now();
+    analysisReported.current = false;
+    trackActivationEvent("sample_started", "sample_flow", {
+      sample_id: SAMPLE_ID,
+      sample_version: SAMPLE_VERSION,
+      entry_point: "landing",
+      sample_mode: true,
+    });
+  }
+
+  function handleResetSample() {
+    const example = createSampleDeal();
+    setSampleDeal(example);
+    setTab("analyzer");
+    sampleStartedAt.current = Date.now();
+    analysisReported.current = false;
+    trackActivationEvent("sample_started", "sample_flow", {
+      sample_id: SAMPLE_ID,
+      sample_version: SAMPLE_VERSION,
+      entry_point: "sample_reset",
+      sample_mode: true,
+    });
+  }
+
+  function handleStartWorkspace() {
+    if (!dealsReady) return;
+    const hasOnlyPreview = deals?.length === 1 && deals[0].id === PREVIEW_ID;
+    if (firstVisit || hasOnlyPreview) {
+      const created = newDeal();
+      setDeals([created]);
+      setActiveId(created.id);
+      setFirstVisit(false);
+    }
+    setSampleMode(false);
+    setSampleDeal(null);
+    setSampleExported(false);
+    setTab("analyzer");
+  }
+
+  function openPricing(entryPoint: string, reason: "deals" | "pdf" | null = null) {
+    setPricingEntryPoint(entryPoint);
+    setPricingReason(reason);
+    setPricingOpen(true);
+  }
+
+  function handleTabChange(nextTab: Tab) {
+    setTab(nextTab);
+    if (nextTab === "scope") {
+      trackActivationEvent("scope_opened", "scope_builder", {
+        scope_view_id: "scope_builder_v1",
+        entry_point: sampleMode ? "sample_flow" : "workspace",
+        sample_mode: sampleMode,
+        analysis_stage: "scope_builder",
+      });
+    }
+  }
+
+  function handleSampleAnalysisComplete() {
+    if (!sampleMode || analysisReported.current) return;
+    analysisReported.current = true;
+    const elapsedSeconds = Math.ceil((Date.now() - (sampleStartedAt.current ?? Date.now())) / 1000);
+    const elapsedBucket = elapsedSeconds <= 10
+      ? "0_10s"
+      : elapsedSeconds <= 30
+        ? "11_30s"
+        : elapsedSeconds <= 60
+          ? "31_60s"
+          : "60s_plus";
+    trackActivationEvent("first_analysis_complete", "sample_analysis", {
+      analysis_mode: "flip",
+      result_status: "success",
+      sample_version: SAMPLE_VERSION,
+      elapsed_bucket: elapsedBucket,
+    });
+  }
+
+  function handlePricingViewed(entryPoint: string) {
+    trackActivationEvent("pricing_viewed", "pricing_modal", {
+      offer_version: OFFER_VERSION,
+      plan_ids_shown: "free,pro",
+      billing_periods_shown: "monthly,annual",
+      entry_point: entryPoint,
+    });
+  }
+
   function handleNewDeal() {
     if (!dealsReady) return;
     if (!isPro && deals && deals.length >= FREE_DEAL_LIMIT) {
-      setPricingReason("deals");
-      setPricingOpen(true);
+      openPricing("deal_limit", "deals");
       return;
     }
     const d = newDeal();
@@ -143,8 +267,7 @@ export default function FlipOSApp({ authEnabled = false }: { authEnabled?: boole
     const sample = !isPro;
     // Free plan: one watermarked sample per deal, then the paywall
     if (sample && freePdfUsed[activeDeal.id]) {
-      setPricingReason("pdf");
-      setPricingOpen(true);
+      openPricing("pdf_limit", "pdf");
       return;
     }
     // Don't let anyone (especially a one-shot sample) export an empty scope
@@ -157,6 +280,14 @@ export default function FlipOSApp({ authEnabled = false }: { authEnabled?: boole
       // PDF library loads only when needed — keeps the app fast
       const { downloadScopePdf } = await import("@/app/components/scopePdf");
       await downloadScopePdf(activeDeal, { watermark: sample });
+      if (sampleMode) {
+        trackActivationEvent("sample_pdf_exported", "scope_builder", {
+          export_format: "pdf",
+          sample_version: SAMPLE_VERSION,
+          export_mode: "sample",
+          export_status: "success",
+        });
+      }
       if (sample) {
         markFreePdfExportUsed(activeDeal.id);
         setFreePdfUsed((m) => ({ ...m, [activeDeal.id]: true }));
@@ -178,6 +309,26 @@ export default function FlipOSApp({ authEnabled = false }: { authEnabled?: boole
 
   // Strategy-aware health badge: profit for flips, cash flow for holds
   const verdict = activeDeal ? dealVerdict(activeDeal.form, rehabFromScope) : null;
+
+  if (firstVisit && !sampleMode && !restoreFailed) {
+    return (
+      <>
+        <FirstVisitLanding
+          disabled={!dealsReady}
+          onTrySample={handleStartSample}
+          onStartWorkspace={handleStartWorkspace}
+          onViewPricing={() => openPricing("landing")}
+        />
+        <PricingModal
+          open={pricingOpen}
+          onClose={() => setPricingOpen(false)}
+          reason={pricingReason}
+          entryPoint={pricingEntryPoint}
+          onPricingViewed={handlePricingViewed}
+        />
+      </>
+    );
+  }
 
   if (!deals || !activeDeal) {
     return (
@@ -208,10 +359,7 @@ export default function FlipOSApp({ authEnabled = false }: { authEnabled?: boole
               </span>
             ) : (
               <button
-                onClick={() => {
-                  setPricingReason(null);
-                  setPricingOpen(true);
-                }}
+                onClick={() => openPricing("header_upgrade")}
                 className="text-xs font-semibold px-2.5 py-1 rounded-lg border border-accent-700/60 text-accent-400 hover:bg-accent-500/10 transition-colors"
               >
                 Upgrade
@@ -219,38 +367,60 @@ export default function FlipOSApp({ authEnabled = false }: { authEnabled?: boole
             )}
           </div>
 
-          {/* Deal switcher */}
-          <div className="flex items-center gap-2 min-w-0">
-            <select
-              value={activeId}
-              onChange={(e) => setActiveId(e.target.value)}
-              disabled={!dealsReady}
-              className="max-w-40 sm:max-w-60 bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-sm text-slate-200 focus:outline-none focus:border-accent-500 truncate"
-              title="Switch deal"
-            >
-              {deals.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {dealLabel(d)}
-                </option>
-              ))}
-            </select>
-            <button
-              onClick={handleNewDeal}
-              disabled={!dealsReady}
-              className="shrink-0 bg-accent-500 hover:bg-accent-400 text-white text-sm font-semibold px-3 py-1.5 rounded-lg transition-colors"
-              title="Start a new deal"
-            >
-              + New
-            </button>
-            <button
-              onClick={handleDeleteDeal}
-              disabled={!dealsReady}
-              className="shrink-0 text-slate-500 hover:text-red-400 text-sm px-1.5 py-1.5 transition-colors"
-              title="Delete this deal"
-            >
-              🗑
-            </button>
-          </div>
+          {/* Deal switcher or isolated synthetic sample controls */}
+          {sampleMode ? (
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="rounded-full border border-accent-700 bg-accent-950 px-3 py-1.5 text-base font-bold uppercase tracking-wide text-accent-200">
+                Sample
+              </span>
+              <button
+                onClick={handleResetSample}
+                disabled={!dealsReady}
+                className="shrink-0 rounded-lg border border-slate-700 px-3 py-1.5 text-base font-semibold text-slate-200 hover:border-slate-500"
+              >
+                Reset sample
+              </button>
+              <button
+                onClick={handleStartWorkspace}
+                disabled={!dealsReady}
+                className="shrink-0 rounded-lg bg-accent-500 px-3 py-1.5 text-base font-semibold text-white hover:bg-accent-400"
+              >
+                Exit sample
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 min-w-0">
+              <select
+                value={activeId}
+                onChange={(e) => setActiveId(e.target.value)}
+                disabled={!dealsReady}
+                className="max-w-40 sm:max-w-60 bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-sm text-slate-200 focus:outline-none focus:border-accent-500 truncate"
+                title="Switch deal"
+              >
+                {deals.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {dealLabel(d)}
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={handleNewDeal}
+                disabled={!dealsReady}
+                className="shrink-0 bg-accent-500 hover:bg-accent-400 text-white text-sm font-semibold px-3 py-1.5 rounded-lg transition-colors"
+                title="Start a new deal"
+              >
+                + New
+              </button>
+              <button
+                onClick={handleDeleteDeal}
+                disabled={!dealsReady}
+                className="shrink-0 text-slate-500 hover:text-red-400 text-sm px-1.5 py-1.5 transition-colors"
+                title="Delete this deal"
+              >
+                🗑
+              </button>
+            </div>
+          )}
 
           <div className="flex items-center gap-2 shrink-0">
             {verdict && (
@@ -274,11 +444,11 @@ export default function FlipOSApp({ authEnabled = false }: { authEnabled?: boole
               ["analyzer", "Deal Analyzer"],
               ["scope", "Scope Builder"],
             ] as [Tab, string][]
-          ).map(([key, label]) => (
-            <button
-              key={key}
-              onClick={() => setTab(key)}
-              disabled={!dealsReady}
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => handleTabChange(key)}
+                disabled={!dealsReady}
               className={`px-3.5 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
                 tab === key
                   ? "border-accent-500 text-accent-400"
@@ -307,19 +477,34 @@ export default function FlipOSApp({ authEnabled = false }: { authEnabled?: boole
         </div>
       </header>
 
+      {sampleMode && (
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 mt-4">
+          <div role="note" className="flex flex-col gap-3 rounded-xl border border-accent-800/70 bg-accent-950/30 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-base leading-6 text-accent-100">
+              <strong className="mr-2">Synthetic sample.</strong>
+              This read-only example is never saved. Your existing deals stay untouched.
+            </p>
+            <button
+              onClick={handleStartWorkspace}
+              className="shrink-0 rounded-lg border border-accent-700 px-3 py-2 text-base font-semibold text-accent-100 hover:bg-accent-900/50"
+            >
+              Open my workspace
+            </button>
+          </div>
+        </div>
+      )}
+
       {sampleExported && !isPro && (
         <div className="max-w-6xl mx-auto px-4 sm:px-6 mt-4">
           <div className="flex items-center justify-between gap-3 rounded-lg border border-accent-800/60 bg-accent-950/30 px-4 py-3">
             <p className="text-sm text-accent-200/90">
-              📄 Your sample scope PDF downloaded — that&apos;s exactly what your contractor
-              gets. Go Pro to remove the watermark and export every deal, every revision.
+              {sampleMode
+                ? "Your illustrative sample PDF downloaded. It contains only synthetic data."
+                : "Your sample scope PDF downloaded. Go Pro to remove the watermark and export every deal and revision."}
             </p>
             <div className="flex items-center gap-2 shrink-0">
               <button
-                onClick={() => {
-                  setPricingReason("pdf");
-                  setPricingOpen(true);
-                }}
+                onClick={() => openPricing("sample_pdf_success", "pdf")}
                 className="text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-accent-500 hover:bg-accent-400 text-white transition-colors"
               >
                 Remove watermark
@@ -354,9 +539,11 @@ export default function FlipOSApp({ authEnabled = false }: { authEnabled?: boole
       <main className="max-w-6xl mx-auto px-4 sm:px-6 py-6 lg:py-8">
         <section aria-labelledby="workspace-heading" className="mb-6 flex flex-col gap-4 rounded-xl border border-slate-800 bg-slate-900/50 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h1 id="workspace-heading" className="text-lg font-semibold">Your deal workspace</h1>
+            <h1 id="workspace-heading" className="text-lg font-semibold">{sampleMode ? "Sample deal workspace" : "Your deal workspace"}</h1>
             <p className="mt-1 text-base text-slate-300">
-              No sign-in required to analyze a deal. Deals are saved in this browser, not synced between devices.
+              {sampleMode
+                ? "Synthetic example only. It is read-only and is not saved."
+                : "No sign-in required to analyze a deal. Deals are saved in this browser, not synced between devices."}
             </p>
           </div>
           {authEnabled && <OptionalAccountControls onPlan={setAccountPlan} />}
@@ -371,15 +558,16 @@ export default function FlipOSApp({ authEnabled = false }: { authEnabled?: boole
             <button onClick={() => setRestoreAttempt((attempt) => attempt + 1)} className="mt-3 rounded-lg border border-amber-700 px-4 py-2 text-base font-semibold text-amber-100">Retry opening deals</button>
           </div>
         )}
-        <fieldset disabled={!dealsReady} aria-busy={!dealsReady && !restoreFailed} className="min-w-0">
+        <fieldset disabled={!dealsReady || sampleMode} aria-busy={!dealsReady && !restoreFailed} className="min-w-0">
         {tab === "analyzer" ? (
           <DealAnalyzer
             form={activeDeal.form}
             onFormChange={(form) => updateActiveDeal({ form })}
             rehabFromScope={rehabFromScope}
-            onGoToScope={() => setTab("scope")}
+            onGoToScope={() => handleTabChange("scope")}
             mainPhotoId={activeDeal.mainPhotoId}
             onMainPhotoChange={(mainPhotoId) => updateActiveDeal({ mainPhotoId })}
+            onAnalysisComplete={handleSampleAnalysisComplete}
           />
         ) : (
           <ScopeBuilder
@@ -400,6 +588,8 @@ export default function FlipOSApp({ authEnabled = false }: { authEnabled?: boole
         open={pricingOpen}
         onClose={() => setPricingOpen(false)}
         reason={pricingReason}
+        entryPoint={pricingEntryPoint}
+        onPricingViewed={handlePricingViewed}
       />
 
     </div>
