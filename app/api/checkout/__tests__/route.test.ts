@@ -24,7 +24,10 @@ beforeEach(() => {
   vi.stubEnv("VERCEL_ENV", "production");
   vi.stubEnv("VERCEL_URL", "");
   vi.stubEnv("VERCEL_PROJECT_PRODUCTION_URL", "");
-  stripeMock.createSession.mockResolvedValue({ url: "https://checkout.stripe.test/session" });
+  stripeMock.createSession.mockResolvedValue({
+    id: "cs_test_created",
+    url: "https://checkout.stripe.test/session",
+  });
 });
 
 afterEach(() => {
@@ -32,55 +35,62 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe("POST /api/checkout", () => {
-  it("ignores attacker-controlled Origin and Host when building Stripe return URLs", async () => {
-    const request = new Request("https://flipos-tau.vercel.app/api/checkout", {
-      method: "POST",
-      headers: {
-        origin: "https://attacker.example",
-        host: "attacker.example",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ interval: "annual" }),
-    });
+function checkoutRequest(body: unknown, headers: Record<string, string> = {}) {
+  return new Request("https://flipos-tau.vercel.app/api/checkout", {
+    method: "POST",
+    headers: { "content-type": "application/json", ...headers },
+    body: JSON.stringify(body),
+  });
+}
 
-    const response = await POST(request);
+describe("POST /api/checkout", () => {
+  it("uses server-configured price and trusted URLs, and sets an HttpOnly claim cookie", async () => {
+    const response = await POST(checkoutRequest(
+      { interval: "annual" },
+      { origin: "https://attacker.example", host: "attacker.example" }
+    ));
+
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ url: "https://checkout.stripe.test/session" });
     expect(stripeMock.createSession).toHaveBeenCalledWith(expect.objectContaining({
-      success_url: "https://flipos-tau.vercel.app/?checkout=success",
+      success_url: "https://flipos-tau.vercel.app/?checkout=success&session_id={CHECKOUT_SESSION_ID}",
       cancel_url: "https://flipos-tau.vercel.app/?checkout=cancelled",
       line_items: [{ price: "price_annual", quantity: 1 }],
-      metadata: {
+      metadata: expect.objectContaining({
         plan_id: "pro",
         billing_period: "annual",
         offer_version: OFFER_VERSION,
-      },
+        checkout_claim_hash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      }),
     }));
+    expect(response.headers.get("set-cookie")).toContain("HttpOnly");
+    expect(response.headers.get("set-cookie")).toContain("SameSite=Lax");
   });
 
-  it("stores the anonymous session reference only when the request carries opt-in consent", async () => {
+  it("stores an anonymous analytics ID only when the request carries opt-in consent", async () => {
     const anonSessionId = "123e4567-e89b-42d3-a456-426614174000";
-    const request = new Request("https://flipos-tau.vercel.app/api/checkout", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        interval: "monthly",
-        analytics: { consent_state: "granted", anon_session_id: anonSessionId },
-      }),
-    });
+    const response = await POST(checkoutRequest({
+      interval: "monthly",
+      analytics: { consent_state: "granted", anon_session_id: anonSessionId },
+    }));
 
-    const response = await POST(request);
     expect(response.status).toBe(200);
     expect(stripeMock.createSession).toHaveBeenCalledWith(expect.objectContaining({
       line_items: [{ price: "price_monthly", quantity: 1 }],
-      metadata: {
+      metadata: expect.objectContaining({
         plan_id: "pro",
         billing_period: "monthly",
         offer_version: OFFER_VERSION,
         analytics_consent: "granted",
         anon_session_id: anonSessionId,
-      },
+      }),
     }));
+  });
+
+  it("returns a clear configuration error without creating a Stripe session", async () => {
+    vi.stubEnv("STRIPE_PRICE_ANNUAL", "");
+    const response = await POST(checkoutRequest({ interval: "annual" }));
+    expect(response.status).toBe(503);
+    expect(stripeMock.createSession).not.toHaveBeenCalled();
   });
 });

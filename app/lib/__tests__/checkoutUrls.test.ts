@@ -4,14 +4,14 @@ import { getCheckoutReturnUrls } from "@/app/lib/checkoutUrls";
 describe("getCheckoutReturnUrls", () => {
   it("uses an explicitly configured app origin and discards any path", () => {
     expect(getCheckoutReturnUrls({ APP_URL: "https://flipos.example/app", NODE_ENV: "production" })).toEqual({
-      successUrl: "https://flipos.example/?checkout=success",
+      successUrl: "https://flipos.example/?checkout=success&session_id={CHECKOUT_SESSION_ID}",
       cancelUrl: "https://flipos.example/?checkout=cancelled",
     });
   });
 
   it("uses the platform deployment hostname for a preview", () => {
     expect(getCheckoutReturnUrls({ VERCEL_ENV: "preview", VERCEL_URL: "flipos-git-fix-team.vercel.app" }).successUrl)
-      .toBe("https://flipos-git-fix-team.vercel.app/?checkout=success");
+      .toBe("https://flipos-git-fix-team.vercel.app/?checkout=success&session_id={CHECKOUT_SESSION_ID}");
   });
 
   it("uses the configured production hostname when available", () => {
@@ -21,7 +21,7 @@ describe("getCheckoutReturnUrls", () => {
 
   it("uses the documented production domain as a safe fallback", () => {
     expect(getCheckoutReturnUrls({ NODE_ENV: "production" }).successUrl)
-      .toBe("https://flipos-tau.vercel.app/?checkout=success");
+      .toBe("https://flipos-tau.vercel.app/?checkout=success&session_id={CHECKOUT_SESSION_ID}");
   });
 
   it("allows an explicit localhost URL only in development", () => {

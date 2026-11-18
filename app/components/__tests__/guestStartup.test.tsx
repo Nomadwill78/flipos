@@ -42,7 +42,9 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  window.history.replaceState({}, "", "/");
 });
 
 function addressInput() {
@@ -99,6 +101,23 @@ describe("public guest startup", () => {
       expect(JSON.parse(value)[0].id).toBe(saved.id);
       expect(JSON.parse(value)[0].form.address).toBe("456 Saved Ave");
     }
+  });
+
+  it("does not race Checkout verification against the existing entitlement refresh", async () => {
+    const saved = storage.newDeal();
+    localStorage.setItem("flipos.deals.v1", JSON.stringify([saved]));
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ plan: "pro" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    window.history.replaceState({}, "", "/?checkout=success&session_id=cs_test_paid");
+
+    render(<FlipOSApp />);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/checkout/verify");
+    expect(await screen.findByText("Pro", { exact: true })).toBeInTheDocument();
   });
 
   it("does not overwrite malformed saved JSON", async () => {
