@@ -322,3 +322,9 @@ Private — all rights reserved. Not open for redistribution or commercial use w
 ---
 
 *Built with [Claude Code](https://claude.ai/code)*
+
+## Verified subscriptions
+
+Pro now requires a current server-side Stripe check. Guest checkout stores a signed HttpOnly cookie; accounts use a server-only subscription ID written by verified webhooks. Redirect query parameters and old `flipos.plan.v1` browser values grant no access. A cancelled, unpaid, expired or unverifiable subscription stays free. The public calculator and existing saved deals still work without billing or sign-in.
+
+Before rollout, reconcile existing buyers: legacy guest purchases have no signed cookie and old account metadata may lack `stripeSubscriptionId`. Verify each affected purchase in Stripe, bind its `clerkUserId` metadata to the correct authenticated account, and write the verified subscription ID to Clerk private metadata. Do not restore access from browser flags or an unverified email. Test paid/unpaid checkout, cancellation and webhook retries in Stripe test mode before release. Changing the Stripe secret invalidates guest cookies.

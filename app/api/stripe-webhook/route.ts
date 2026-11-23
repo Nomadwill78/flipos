@@ -17,12 +17,13 @@ import { trackVerifiedPaidSuccess } from "@/app/lib/serverAnalytics";
 //                 customer.subscription.updated,
 //                 customer.subscription.deleted
 
-async function setUserPlan(userId: string, plan: "pro" | "free"): Promise<void> {
+async function setUserPlan(userId: string, plan: "pro" | "free", subscriptionId?: string): Promise<void> {
   if (!process.env.CLERK_SECRET_KEY) return;
   const { clerkClient } = await import("@clerk/nextjs/server");
   const client = await clerkClient();
   await client.users.updateUserMetadata(userId, {
     publicMetadata: { plan },
+    ...(subscriptionId ? { privateMetadata: { stripeSubscriptionId: subscriptionId } } : {}),
   });
 }
 
@@ -50,22 +51,26 @@ export async function POST(request: Request) {
     switch (event.type) {
       case "checkout.session.completed": {
         const session = event.data.object;
-        if (session.client_reference_id) {
-          await setUserPlan(session.client_reference_id, "pro");
+        if (session.client_reference_id && session.payment_status === "paid" && typeof session.subscription === "string") {
+          await setUserPlan(session.client_reference_id, "pro", session.subscription);
         }
         await trackVerifiedPaidSuccess(session);
         break;
       }
       case "checkout.session.async_payment_succeeded": {
-        await trackVerifiedPaidSuccess(event.data.object);
+        const session = event.data.object;
+        if (session.client_reference_id && session.payment_status === "paid" && typeof session.subscription === "string") {
+          await setUserPlan(session.client_reference_id, "pro", session.subscription);
+        }
+        await trackVerifiedPaidSuccess(session);
         break;
       }
       case "customer.subscription.updated": {
         const sub = event.data.object;
         const userId = sub.metadata?.clerkUserId;
         if (userId) {
-          const stillPro = ["active", "trialing", "past_due"].includes(sub.status);
-          await setUserPlan(userId, stillPro ? "pro" : "free");
+          const stillPro = ["active", "trialing"].includes(sub.status);
+          await setUserPlan(userId, stillPro ? "pro" : "free", sub.id);
         }
         break;
       }

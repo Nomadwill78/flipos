@@ -1,17 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Deal, ScopeItem, CustomRoom } from "@/app/lib/types";
 import { scopeTotal, itemTotal } from "@/app/lib/types";
 import { loadDeals, saveDeals, newDeal, dealLabel, emptyForm } from "@/app/lib/storage";
 import { deletePhoto } from "@/app/lib/photos";
 import {
   usePlan,
-  setPlan,
   FREE_DEAL_LIMIT,
   readFreePdfExports,
   markFreePdfExportUsed,
-  type Plan,
 } from "@/app/lib/plan";
 import OptionalAccountControls from "@/app/components/OptionalAccountControls";
 import { dealVerdict } from "@/app/lib/analysis";
@@ -54,16 +52,17 @@ export default function FlipOSApp({ authEnabled = false }: { authEnabled?: boole
   const [pricingReason, setPricingReason] = useState<"deals" | "pdf" | null>(null);
   const [pricingEntryPoint, setPricingEntryPoint] = useState("header_upgrade");
   const [welcomePro, setWelcomePro] = useState(false);
-  const [accountPlan, setAccountPlan] = useState<Plan | null>(null);
+  const [accountRevision, setAccountRevision] = useState(0);
+  const onAccountChange = useCallback(() => setAccountRevision((value) => value + 1), []);
   // Which deals have used their one free watermarked sample export
   const [freePdfUsed, setFreePdfUsed] = useState<Record<string, boolean>>({});
   const [sampleExported, setSampleExported] = useState(false);
   const checkoutReturn = useRef(false);
   const sampleStartedAt = useRef<number | null>(null);
   const analysisReported = useRef(false);
-  const plan = usePlan();
-  // Pro if paid on this device OR the signed-in account is Pro
-  const isPro = plan === "pro" || accountPlan === "pro";
+  const plan = usePlan(accountRevision);
+  // Only the server response determines entitlement.
+  const isPro = plan === "pro";
 
   // Handle the return from Stripe checkout
   useEffect(() => {
@@ -71,7 +70,7 @@ export default function FlipOSApp({ authEnabled = false }: { authEnabled?: boole
     const checkout = params.get("checkout");
     if (checkout === "success") {
       checkoutReturn.current = true;
-      setPlan("pro");
+      // The redirect is a navigation hint, never payment evidence.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setWelcomePro(true);
     }
@@ -520,7 +519,7 @@ export default function FlipOSApp({ authEnabled = false }: { authEnabled?: boole
         </div>
       )}
 
-      {welcomePro && (
+      {welcomePro && isPro && (
         <div className="max-w-6xl mx-auto px-4 sm:px-6 mt-4">
           <div className="flex items-center justify-between rounded-lg border border-emerald-800/60 bg-emerald-950/40 px-4 py-3">
             <p className="text-sm text-emerald-300">
@@ -546,7 +545,7 @@ export default function FlipOSApp({ authEnabled = false }: { authEnabled?: boole
                 : "No sign-in required to analyze a deal. Deals are saved in this browser, not synced between devices."}
             </p>
           </div>
-          {authEnabled && <OptionalAccountControls onPlan={setAccountPlan} />}
+          {authEnabled && <OptionalAccountControls onPlan={onAccountChange} />}
         </section>
         {!dealsReady && !restoreFailed && (
           <p role="status" className="mb-4 text-base text-slate-400">Opening this browser&apos;s saved deals…</p>

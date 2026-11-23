@@ -35,6 +35,7 @@ vi.mock("@/app/components/PricingModal", () => ({ default: () => null }));
 
 beforeEach(() => {
   localStorage.clear();
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ plan: "free" }) }));
   clerk.loaded = false;
   clerk.signedIn = false;
   clerk.fail = false;
@@ -43,6 +44,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 function addressInput() {
@@ -177,7 +179,8 @@ describe("optional account controls", () => {
     expect(addressInput()).toHaveValue("789 Guest Blvd");
   });
 
-  it("still applies a signed-in account's Pro plan", async () => {
+  it("applies Pro only after the server verifies the account", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ plan: "pro" }) }));
     clerk.loaded = true;
     clerk.signedIn = true;
     clerk.user = { publicMetadata: { plan: "pro" } };
