@@ -1,4 +1,6 @@
 import Stripe from "stripe";
+import { NextResponse } from "next/server";
+import { ENTITLEMENT_COOKIE, signCheckoutSession } from "@/app/lib/entitlementCookie";
 import { isAuthConfigured } from "@/app/lib/authConfig";
 import { getCheckoutReturnUrls } from "@/app/lib/checkoutUrls";
 import { OFFER_VERSION, UUID_PATTERN } from "@/app/lib/analyticsConstants";
@@ -83,7 +85,13 @@ export async function POST(request: Request) {
       success_url: returnUrls.successUrl,
       cancel_url: returnUrls.cancelUrl,
     });
-    return Response.json({ url: session.url });
+    const response = NextResponse.json({ url: session.url });
+    response.headers.set("Cache-Control", "private, no-store");
+    response.cookies.set(ENTITLEMENT_COOKIE, signCheckoutSession(session.id, secretKey), {
+      httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "lax",
+      path: "/", maxAge: 60 * 60 * 24 * 365,
+    });
+    return response;
   } catch (err) {
     console.error("Stripe checkout error:", err);
     return Response.json(

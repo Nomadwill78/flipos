@@ -1,53 +1,38 @@
 "use client";
 
-import { useSyncExternalStore } from "react";
-
-// Freemium plan state.
-//
-// NOTE: until Clerk auth + Stripe webhooks are wired in, the plan is stored
-// per-device in localStorage and unlocked by the checkout success redirect.
-// Once accounts exist, this becomes a server-verified subscription lookup.
-
+import { useEffect, useState } from "react";
 export type Plan = "free" | "pro";
-
-export const PRICING = {
-  monthly: 29,
-  annual: 290, // two months free vs 12 × $29 = $348
-} as const;
-
+export const PRICING = { monthly: 29, annual: 290 } as const;
 export const FREE_DEAL_LIMIT = 1;
 
-const PLAN_KEY = "flipos.plan.v1";
-
-export function getPlan(): Plan {
-  if (typeof window === "undefined") return "free";
-  try {
-    return window.localStorage.getItem(PLAN_KEY) === "pro" ? "pro" : "free";
-  } catch {
-    return "free";
-  }
-}
-
-export function setPlan(plan: Plan): void {
-  try {
-    window.localStorage.setItem(PLAN_KEY, plan);
-    window.dispatchEvent(new Event("flipos-plan-change"));
-  } catch {
-    // ignore — plan stays free in memory
-  }
-}
-
-function subscribePlan(callback: () => void): () => void {
-  window.addEventListener("flipos-plan-change", callback);
-  window.addEventListener("storage", callback);
-  return () => {
-    window.removeEventListener("flipos-plan-change", callback);
-    window.removeEventListener("storage", callback);
-  };
-}
-
-export function usePlan(): Plan {
-  return useSyncExternalStore(subscribePlan, getPlan, () => "free");
+// Plan state is never persisted in localStorage. Account changes and tab focus
+// revalidate with the server; cancellation is picked up at most a minute later.
+export function usePlan(accountSignal: number = 0): Plan {
+  const [plan, setVerifiedPlan] = useState<Plan>("free");
+  useEffect(() => {
+    let active = true;
+    let sequence = 0;
+    const controller = new AbortController();
+    async function refresh() {
+      const current = ++sequence;
+      try {
+        const response = await fetch("/api/entitlement", { cache: "no-store", signal: controller.signal });
+        const data = await response.json();
+        if (active && current === sequence) setVerifiedPlan(response.ok && data.plan === "pro" ? "pro" : "free");
+      } catch {
+        if (active && current === sequence) setVerifiedPlan("free");
+      }
+    }
+    // Discard any entitlement from the previous account while rechecking.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setVerifiedPlan("free");
+    void refresh();
+    const onFocus = () => { void refresh(); };
+    window.addEventListener("focus", onFocus);
+    const interval = window.setInterval(onFocus, 60_000);
+    return () => { active = false; controller.abort(); window.clearInterval(interval); window.removeEventListener("focus", onFocus); };
+  }, [accountSignal]);
+  return plan;
 }
 
 // ── Free sample PDF exports ───────────────────────────────────────────────────

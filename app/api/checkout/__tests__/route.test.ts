@@ -24,7 +24,7 @@ beforeEach(() => {
   vi.stubEnv("VERCEL_ENV", "production");
   vi.stubEnv("VERCEL_URL", "");
   vi.stubEnv("VERCEL_PROJECT_PRODUCTION_URL", "");
-  stripeMock.createSession.mockResolvedValue({ url: "https://checkout.stripe.test/session" });
+  stripeMock.createSession.mockResolvedValue({ id: "cs_test_unit", url: "https://checkout.stripe.test/session" });
 });
 
 afterEach(() => {
@@ -46,6 +46,7 @@ describe("POST /api/checkout", () => {
 
     const response = await POST(request);
     expect(response.status).toBe(200);
+    expect(response.headers.get("set-cookie")).toContain("HttpOnly");
     expect(await response.json()).toEqual({ url: "https://checkout.stripe.test/session" });
     expect(stripeMock.createSession).toHaveBeenCalledWith(expect.objectContaining({
       success_url: "https://flipos-tau.vercel.app/?checkout=success",
@@ -72,6 +73,7 @@ describe("POST /api/checkout", () => {
 
     const response = await POST(request);
     expect(response.status).toBe(200);
+    expect(response.headers.get("set-cookie")).toContain("HttpOnly");
     expect(stripeMock.createSession).toHaveBeenCalledWith(expect.objectContaining({
       line_items: [{ price: "price_monthly", quantity: 1 }],
       metadata: {
